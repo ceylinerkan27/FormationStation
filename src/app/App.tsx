@@ -1,6 +1,18 @@
 import { useState, useRef, useEffect } from 'react';
 import { Settings, Search, Play, User, Plus, ChevronRight, Minus, X, Home, Trash2, Bold, Italic, Underline } from 'lucide-react';
 
+// Animation state for dancer transitions
+interface DancerAnimation {
+  dancerId: string;
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  type: 'move' | 'exit' | 'enter';
+  exitDirection?: 'left' | 'right' | 'top' | 'bottom';
+  enterDirection?: 'left' | 'right' | 'top' | 'bottom';
+}
+
 interface Dancer {
   id: string;
   name: string;
@@ -195,6 +207,9 @@ export default function App() {
   const [isPathEditMode, setIsPathEditMode] = useState(false);
   const [formations, setFormations] = useState<Formation[]>([]);
   const [selectedFormationId, setSelectedFormationId] = useState<string | null>(null);
+  const [previousFormationId, setPreviousFormationId] = useState<string | null>(null);
+  const [dancerAnimations, setDancerAnimations] = useState<DancerAnimation[]>([]);
+  const [isAnimating, setIsAnimating] = useState(false);
   const [editingFormationId, setEditingFormationId] = useState<string | null>(null);
   const [editingNotes, setEditingNotes] = useState(false);
   const [draggedFormation, setDraggedFormation] = useState<{ id: string; startX: number; startDuration: number } | null>(null);
@@ -383,6 +398,126 @@ export default function App() {
     }
     
     setRemovalDialog(null);
+  };
+
+  // Calculate the nearest stage edge for a dancer position
+  const getNearestEdge = (x: number, y: number) => {
+    const distances = {
+      left: x,
+      right: 800 - x,
+      top: y,
+      bottom: 500 - y
+    };
+    return Object.entries(distances).reduce((a, b) => 
+      distances[a[0] as keyof typeof distances] < distances[b[0] as keyof typeof distances] ? a : b
+    )[0] as 'left' | 'right' | 'top' | 'bottom';
+  };
+
+  // Get exit position based on nearest edge
+  const getExitPosition = (x: number, y: number, edge: 'left' | 'right' | 'top' | 'bottom') => {
+    switch (edge) {
+      case 'left': return { x: -50, y };
+      case 'right': return { x: 850, y };
+      case 'top': return { x, y: -50 };
+      case 'bottom': return { x, y: 550 };
+    }
+  };
+
+  // Get enter position based on nearest edge to destination
+  const getEnterPosition = (x: number, y: number, edge: 'left' | 'right' | 'top' | 'bottom') => {
+    switch (edge) {
+      case 'left': return { x: -50, y };
+      case 'right': return { x: 850, y };
+      case 'top': return { x, y: -50 };
+      case 'bottom': return { x, y: 550 };
+    }
+  };
+
+  const handleFormationClick = (id: string) => {
+    const currentFormation = formations.find(f => f.id === selectedFormationId);
+    const nextFormation = formations.find(f => f.id === id);
+    
+    if (!currentFormation || !nextFormation) {
+      setSelectedFormationId(id);
+      setPreviousFormationId(selectedFormationId);
+      return;
+    }
+
+    const currentIndex = formations.findIndex(f => f.id === selectedFormationId);
+    const nextIndex = formations.findIndex(f => f.id === id);
+
+    // Only animate if clicking the directly next formation
+    if (nextIndex === currentIndex + 1) {
+      const animations: DancerAnimation[] = [];
+      
+      // Get dancer IDs in current and next formations
+      const currentDancerIds = new Set(currentFormation.dancers.map(d => d.dancerId));
+      const nextDancerIds = new Set(nextFormation.dancers.map(d => d.dancerId));
+      
+      // Dancers moving between formations
+      currentFormation.dancers.forEach(dancerPos => {
+        if (nextDancerIds.has(dancerPos.dancerId)) {
+          // Dancer exists in both - animate to new position
+          const nextPos = nextFormation.dancers.find(d => d.dancerId === dancerPos.dancerId);
+          if (nextPos) {
+            animations.push({
+              dancerId: dancerPos.dancerId,
+              startX: dancerPos.x,
+              startY: dancerPos.y,
+              endX: nextPos.x,
+              endY: nextPos.y,
+              type: 'move'
+            });
+          }
+        } else {
+          // Dancer only in current - exit animation
+          const edge = getNearestEdge(dancerPos.x, dancerPos.y);
+          const exitPos = getExitPosition(dancerPos.x, dancerPos.y, edge);
+          animations.push({
+            dancerId: dancerPos.dancerId,
+            startX: dancerPos.x,
+            startY: dancerPos.y,
+            endX: exitPos.x,
+            endY: exitPos.y,
+            type: 'exit',
+            exitDirection: edge
+          });
+        }
+      });
+      
+      // Dancers entering (in next but not in current)
+      nextFormation.dancers.forEach(dancerPos => {
+        if (!currentDancerIds.has(dancerPos.dancerId)) {
+          const edge = getNearestEdge(dancerPos.x, dancerPos.y);
+          const enterPos = getEnterPosition(dancerPos.x, dancerPos.y, edge);
+          animations.push({
+            dancerId: dancerPos.dancerId,
+            startX: enterPos.x,
+            startY: enterPos.y,
+            endX: dancerPos.x,
+            endY: dancerPos.y,
+            type: 'enter',
+            enterDirection: edge
+          });
+        }
+      });
+
+      // Start animation
+      setDancerAnimations(animations);
+      setIsAnimating(true);
+      setPreviousFormationId(selectedFormationId);
+      setSelectedFormationId(id);
+
+      // Clear animation state after transition
+      setTimeout(() => {
+        setIsAnimating(false);
+        setDancerAnimations([]);
+      }, 1000);
+    } else {
+      // Not adjacent or going backwards - just switch
+      setPreviousFormationId(selectedFormationId);
+      setSelectedFormationId(id);
+    }
   };
 
   const handleFormationDoubleClick = (id: string) => {
@@ -796,7 +931,7 @@ export default function App() {
                 className={`bg-[#2e2e2e] border rounded-[8px] p-3 cursor-pointer hover:bg-[#333] transition-colors ${
                   selectedFormationId === formation.id ? 'border-[#8b72be]' : 'border-[#3a3a3a]'
                 }`}
-                onClick={() => setSelectedFormationId(formation.id)}
+                onClick={() => handleFormationClick(formation.id)}
                 onContextMenu={(e) => handleFormationContextMenu(e, formation.id)}
               >
                 <div className="text-[#ccc] text-[12px] mb-2">{formation.name}</div>
@@ -877,6 +1012,31 @@ export default function App() {
                   if (!dancer) return null;
                   const isSelected = selectedDancerIds.has(dancer.id);
                   
+                  // Check if this dancer has an animation
+                  const animation = dancerAnimations.find(a => a.dancerId === dancerPos.dancerId);
+                  
+                  if (animation && isAnimating) {
+                    // During animation, use animation positions
+                    return (
+                      <div
+                        key={dancerPos.dancerId}
+                        className={`dancer-circle absolute w-[50px] h-[50px] bg-[#8b72be] rounded-full flex items-center justify-center text-white text-[18px] font-medium cursor-move select-none transition-all duration-1000 ease-in-out ${
+                          isSelected ? 'ring-4 ring-white' : ''
+                        }`}
+                        style={{
+                          left: `${animation.endX}px`,
+                          top: `${animation.endY}px`,
+                          transform: 'translate(-50%, -50%)',
+                          opacity: animation.type === 'exit' ? 0 : 1
+                        }}
+                        onClick={(e) => handleDancerClick(e, dancer.id)}
+                        onMouseDown={(e) => handleDancerDragStart(e, dancer.id, dancerPos.x, dancerPos.y)}
+                      >
+                        {getDancerInitials(dancer)}
+                      </div>
+                    );
+                  }
+                  
                   return (
                     <div
                       key={dancerPos.dancerId}
@@ -890,6 +1050,27 @@ export default function App() {
                       }}
                       onClick={(e) => handleDancerClick(e, dancer.id)}
                       onMouseDown={(e) => handleDancerDragStart(e, dancer.id, dancerPos.x, dancerPos.y)}
+                    >
+                      {getDancerInitials(dancer)}
+                    </div>
+                  );
+                })}
+                
+                {/* Render entering dancers during animation */}
+                {isAnimating && dancerAnimations.filter(a => a.type === 'enter').map(animation => {
+                  const dancer = dancers.find(d => d.id === animation.dancerId);
+                  if (!dancer) return null;
+                  
+                  return (
+                    <div
+                      key={animation.dancerId}
+                      className="absolute w-[50px] h-[50px] bg-[#8b72be] rounded-full flex items-center justify-center text-white text-[18px] font-medium transition-all duration-1000 ease-in-out"
+                      style={{
+                        left: `${animation.endX}px`,
+                        top: `${animation.endY}px`,
+                        transform: 'translate(-50%, -50%)',
+                        opacity: 1
+                      }}
                     >
                       {getDancerInitials(dancer)}
                     </div>
@@ -973,7 +1154,7 @@ export default function App() {
                   left: `${40 + index * 180 + (formationShifts[formation.id] || 0)}px`,
                   width: `${formation.duration}px`
                 }}
-                onClick={() => setSelectedFormationId(formation.id)}
+                onClick={() => handleFormationClick(formation.id)}
                 onDoubleClick={() => handleFormationDoubleClick(formation.id)}
               >
                 {editingFormationId === formation.id ? (
