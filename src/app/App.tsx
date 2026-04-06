@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Settings, Search, Play, User, Plus, ChevronRight, Minus, X, Home, Trash2 } from 'lucide-react';
+import { Settings, Search, Play, User, Plus, ChevronRight, Minus, X, Home, Trash2, Bold, Italic, Underline } from 'lucide-react';
 
 interface Dancer {
   id: string;
@@ -22,7 +22,175 @@ interface Formation {
   dancers: DancerPosition[];
 }
 
+// Home Screen Component
+function HomeScreen({ onOpenProject }: { onOpenProject: () => void }) {
+  return (
+    <div className="size-full flex flex-col bg-[#1d1d1d] overflow-auto">
+      {/* Top Purple Bar */}
+      <div className="h-[67px] bg-[#8b72be] flex items-center justify-center px-6 relative">
+        <h1 className="text-white text-[24px] font-normal">Formation Station</h1>
+      </div>
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col items-center justify-start p-8 gap-10">
+        {/* Hello World Heading */}
+        <h2 className="text-[#b4b1b1] text-[48px] font-bold tracking-wider">hello world</h2>
+
+        {/* Colors Section */}
+        <div className="w-full max-w-4xl">
+          <h3 className="text-[#8b8b8b] text-[20px] font-bold tracking-[0.52px] mb-4">Project Colors</h3>
+          <div className="flex flex-wrap gap-4">
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-16 h-16 rounded-[8px] bg-[#8b72be] border border-[#3a3a3a]" />
+              <span className="text-[#888] text-[12px]">#8b72be</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-16 h-16 rounded-[8px] bg-[#1d1d1d] border border-[#3a3a3a]" />
+              <span className="text-[#888] text-[12px]">#1d1d1d</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-16 h-16 rounded-[8px] bg-[#252525] border border-[#3a3a3a]" />
+              <span className="text-[#888] text-[12px]">#252525</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-16 h-16 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a]" />
+              <span className="text-[#888] text-[12px]">#2a2a2a</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-16 h-16 rounded-[8px] bg-[#2e2e2e] border border-[#3a3a3a]" />
+              <span className="text-[#888] text-[12px]">#2e2e2e</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-16 h-16 rounded-[8px] bg-[#3a3a3a] border border-[#3a3a3a]" />
+              <span className="text-[#888] text-[12px]">#3a3a3a</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-16 h-16 rounded-[8px] bg-[#b4b1b1] border border-[#3a3a3a]" />
+              <span className="text-[#888] text-[12px]">#b4b1b1</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-16 h-16 rounded-[8px] bg-[#8b8b8b] border border-[#3a3a3a]" />
+              <span className="text-[#888] text-[12px]">#8b8b8b</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-16 h-16 rounded-[8px] bg-[#e03535] border border-[#3a3a3a]" />
+              <span className="text-[#888] text-[12px]">#e03535</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-16 h-16 rounded-[8px] bg-[#ffffff] border border-[#3a3a3a]" />
+              <span className="text-[#888] text-[12px]">#ffffff</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Fonts Section */}
+        <div className="w-full max-w-4xl">
+          <h3 className="text-[#8b8b8b] text-[20px] font-bold tracking-[0.52px] mb-4">Typography</h3>
+          <div className="flex flex-col gap-4">
+            <div className="bg-[#252525] rounded-[8px] p-4 border border-[#3a3a3a]">
+              <span className="text-[#888] text-[12px] mb-2 block">Heading 1 (24px)</span>
+              <p className="text-white text-[24px] font-normal">The quick brown fox jumps over the lazy dog</p>
+            </div>
+            <div className="bg-[#252525] rounded-[8px] p-4 border border-[#3a3a3a]">
+              <span className="text-[#888] text-[12px] mb-2 block">Heading 2 (20px Bold)</span>
+              <p className="text-[#b4b1b1] text-[20px] font-bold tracking-[0.52px]">The quick brown fox jumps over the lazy dog</p>
+            </div>
+            <div className="bg-[#252525] rounded-[8px] p-4 border border-[#3a3a3a]">
+              <span className="text-[#888] text-[12px] mb-2 block">Body (18px)</span>
+              <p className="text-[#b4b1b1] text-[18px] leading-[19.5px] tracking-[0.52px]">The quick brown fox jumps over the lazy dog. This is body text used for notes and descriptions.</p>
+            </div>
+            <div className="bg-[#252525] rounded-[8px] p-4 border border-[#3a3a3a]">
+              <span className="text-[#888] text-[12px] mb-2 block">Small (13px)</span>
+              <p className="text-white text-[13px]">The quick brown fox jumps over the lazy dog</p>
+            </div>
+            <div className="bg-[#252525] rounded-[8px] p-4 border border-[#3a3a3a]">
+              <span className="text-[#888] text-[12px] mb-2 block">Label (12px)</span>
+              <p className="text-[#ccc] text-[12px]">The quick brown fox jumps over the lazy dog</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Icons Section */}
+        <div className="w-full max-w-4xl">
+          <h3 className="text-[#8b8b8b] text-[20px] font-bold tracking-[0.52px] mb-4">Icons (Lucide React)</h3>
+          <div className="flex flex-wrap gap-6">
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
+                <Home size={24} className="text-[#8b72be]" />
+              </div>
+              <span className="text-[#888] text-[12px]">Home</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
+                <Settings size={24} className="text-[#888]" />
+              </div>
+              <span className="text-[#888] text-[12px]">Settings</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
+                <Search size={24} className="text-[#888]" />
+              </div>
+              <span className="text-[#888] text-[12px]">Search</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
+                <Play size={24} className="text-[#888]" />
+              </div>
+              <span className="text-[#888] text-[12px]">Play</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
+                <User size={24} className="text-[#888]" />
+              </div>
+              <span className="text-[#888] text-[12px]">User</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
+                <Plus size={24} className="text-[#888]" />
+              </div>
+              <span className="text-[#888] text-[12px]">Plus</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
+                <Trash2 size={24} className="text-[#e03535]" />
+              </div>
+              <span className="text-[#888] text-[12px]">Trash</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
+                <Bold size={24} className="text-[#b4b1b1]" />
+              </div>
+              <span className="text-[#888] text-[12px]">Bold</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
+                <Italic size={24} className="text-[#b4b1b1]" />
+              </div>
+              <span className="text-[#888] text-[12px]">Italic</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
+                <Underline size={24} className="text-[#b4b1b1]" />
+              </div>
+              <span className="text-[#888] text-[12px]">Underline</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Open Project Button */}
+        <button
+          onClick={onOpenProject}
+          className="mt-8 bg-[#8b72be] hover:bg-[#7a61ad] text-white px-8 py-4 rounded-[12px] text-[18px] font-medium transition-colors"
+        >
+          open new project
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
+  const [showHomeScreen, setShowHomeScreen] = useState(true);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [isPathEditMode, setIsPathEditMode] = useState(false);
   const [formations, setFormations] = useState<Formation[]>([]);
@@ -42,6 +210,7 @@ export default function App() {
   const [editingProjectTitle, setEditingProjectTitle] = useState(false);
   
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; formationId: string } | null>(null);
+  const [formationShifts, setFormationShifts] = useState<Record<string, number>>({});
   
   const [showSearchDropdown, setShowSearchDropdown] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -72,6 +241,7 @@ export default function App() {
     };
     setFormations([...formations, newFormation]);
     setSelectedFormationId(newFormation.id);
+    // New formations at the end don't need shifts as they're placed after all others
   };
 
   const handleStageClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -228,10 +398,42 @@ export default function App() {
   };
 
   const handleDeleteFormation = (formationId: string) => {
-    setFormations(formations.filter(f => f.id !== formationId));
+    const deletedIndex = formations.findIndex(f => f.id === formationId);
+    const newFormations = formations.filter(f => f.id !== formationId);
+    
+    // Recalculate shifts after deletion
+    const newShifts = { ...formationShifts };
+    delete newShifts[formationId];
+    
+    // If not the last formation, recalculate shifts for all subsequent formations
+    if (deletedIndex < formations.length - 1) {
+      // Remove all shifts for formations after the deleted one and recalculate
+      for (let i = deletedIndex; i < newFormations.length; i++) {
+        delete newShifts[newFormations[i].id];
+      }
+      
+      // Recalculate shifts based on actual positions
+      const prevFormation = deletedIndex > 0 ? newFormations[deletedIndex - 1] : null;
+      if (prevFormation) {
+        const prevLeft = 40 + (deletedIndex - 1) * 180 + (formationShifts[prevFormation.id] || 0);
+        const prevRight = prevLeft + prevFormation.duration;
+        
+        for (let i = deletedIndex; i < newFormations.length; i++) {
+          const currentLeft = 40 + i * 180;
+          const neededShift = Math.max(0, prevRight - currentLeft);
+          if (neededShift > 0) {
+            newShifts[newFormations[i].id] = neededShift;
+          }
+        }
+      }
+    }
+    
+    setFormations(newFormations);
+    setFormationShifts(newShifts);
+    
     if (selectedFormationId === formationId) {
       // Select another formation if available
-      const remainingFormations = formations.filter(f => f.id !== formationId);
+      const remainingFormations = newFormations;
       setSelectedFormationId(remainingFormations.length > 0 ? remainingFormations[0].id : null);
     }
     setContextMenu(null);
@@ -276,13 +478,77 @@ export default function App() {
     if (draggedFormation && timelineRef.current) {
       const deltaX = e.clientX - draggedFormation.startX;
       const newDuration = Math.max(50, draggedFormation.startDuration + deltaX);
+      
+      // Find the index of the dragged formation
+      const draggedIndex = formations.findIndex(f => f.id === draggedFormation.id);
+      if (draggedIndex === -1) return;
+      
+      // Calculate the right edge of the dragged formation
+      const draggedLeft = 40 + draggedIndex * 180;
+      const draggedRight = draggedLeft + newDuration;
+      
+      const newShifts = { ...formationShifts };
+      
+      // Check for overlaps with formations to the right and calculate shifts
+      let cumulativeShift = 0;
+      for (let i = draggedIndex + 1; i < formations.length; i++) {
+        const nextLeft = 40 + i * 180 + (newShifts[formations[i].id] || 0);
+        
+        // If the dragged formation overlaps with this one, push it
+        if (draggedRight > nextLeft) {
+          const overlap = draggedRight - nextLeft;
+          cumulativeShift += overlap;
+          newShifts[formations[i].id] = (newShifts[formations[i].id] || 0) + overlap;
+        }
+      }
+      
+      // If shrinking, try to reduce shifts (pull formations closer)
+      if (deltaX < 0 && formations.length > draggedIndex + 1) {
+        // Recalculate shifts from scratch based on new duration
+        const recalculatedShifts: Record<string, number> = {};
+        const newDraggedRight = draggedLeft + newDuration;
+        
+        for (let i = draggedIndex + 1; i < formations.length; i++) {
+          const prevFormationId = i === draggedIndex + 1 ? draggedFormation.id : formations[i - 1].id;
+          const prevRight = i === draggedIndex + 1 
+            ? newDraggedRight 
+            : 40 + (i - 1) * 180 + formations[i - 1].duration + (recalculatedShifts[prevFormationId] || 0);
+          
+          const currentLeft = 40 + i * 180;
+          const neededShift = Math.max(0, prevRight - currentLeft);
+          
+          if (neededShift > 0) {
+            recalculatedShifts[formations[i].id] = neededShift;
+          }
+        }
+        
+        // Merge with existing shifts for formations beyond the affected ones
+        const mergedShifts = { ...formationShifts, ...recalculatedShifts };
+        // Remove shifts that are no longer needed
+        for (let i = draggedIndex + 1; i < formations.length; i++) {
+          if (!recalculatedShifts[formations[i].id]) {
+            delete mergedShifts[formations[i].id];
+          }
+        }
+        
+        setFormations(formations.map(f => 
+          f.id === draggedFormation.id ? { ...f, duration: newDuration } : f
+        ));
+        setFormationShifts(mergedShifts);
+        return;
+      }
+      
+      // Update the dragged formation's duration and shifts
       setFormations(formations.map(f => 
         f.id === draggedFormation.id ? { ...f, duration: newDuration } : f
       ));
+      setFormationShifts(newShifts);
     }
   };
 
   const handleMouseUp = () => {
+    // Commit the shifts by updating formation start times if needed
+    // For now, we keep the shifts persistent until formations are rearranged
     setDraggedFormation(null);
   };
 
@@ -349,11 +615,15 @@ export default function App() {
     }
   }, [showSearchDropdown]);
 
+  if (showHomeScreen) {
+    return <HomeScreen onOpenProject={() => setShowHomeScreen(false)} />;
+  }
+
   return (
     <div className="size-full flex flex-col bg-[#1d1d1d] overflow-hidden">
       {/* Top Purple Bar */}
       <div className="h-[67px] bg-[#8b72be] flex items-center justify-center px-6 relative">
-        <button className="absolute left-6 text-white hover:opacity-80 transition-opacity">
+        <button className="absolute left-6 text-white hover:opacity-80 transition-opacity" onClick={() => setShowHomeScreen(true)}>
           <Home size={24} />
         </button>
         {editingProjectTitle ? (
@@ -700,7 +970,7 @@ export default function App() {
                   selectedFormationId === formation.id ? 'ring-2 ring-[#8b72be]' : ''
                 }`}
                 style={{
-                  left: `${40 + index * 180}px`,
+                  left: `${40 + index * 180 + (formationShifts[formation.id] || 0)}px`,
                   width: `${formation.duration}px`
                 }}
                 onClick={() => setSelectedFormationId(formation.id)}
