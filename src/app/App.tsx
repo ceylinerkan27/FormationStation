@@ -226,6 +226,12 @@ export default function App() {
   
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; formationId: string } | null>(null);
   const [formationShifts, setFormationShifts] = useState<Record<string, number>>({});
+
+  const [showAudioUpload, setShowAudioUpload] = useState(false);
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [audioDuration, setAudioDuration] = useState<number | null>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
+  const [timelineContainerWidth, setTimelineContainerWidth] = useState(0);
   
   const [showSearchDropdown, setShowSearchDropdown] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -236,6 +242,35 @@ export default function App() {
   const searchDropdownRef = useRef<HTMLDivElement>(null);
 
   const selectedFormation = formations.find(f => f.id === selectedFormationId);
+
+  // Timeline duration: use audio duration if available, else derive from formations or default
+  const formationSpanPx = formations.length > 0
+    ? Math.max(...formations.map((f, i) => 40 + i * 180 + f.duration))
+    : 0;
+  const timelineDuration = audioDuration != null
+    ? audioDuration
+    : Math.max(60, timelineContainerWidth > 0 ? (formationSpanPx / timelineContainerWidth) * 60 : 60);
+
+  function getTimeInterval(secs: number): number {
+    if (secs <= 30) return 5;
+    if (secs <= 90) return 10;
+    if (secs <= 180) return 15;
+    if (secs <= 360) return 30;
+    if (secs <= 900) return 60;
+    return Math.ceil(secs / 8 / 60) * 60;
+  }
+
+  const timeInterval = getTimeInterval(timelineDuration);
+  const timeMarkers: number[] = [];
+  for (let t = timeInterval; t < timelineDuration; t += timeInterval) {
+    timeMarkers.push(Math.round(t * 10) / 10);
+  }
+
+  function formatTime(secs: number): string {
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  }
 
   // Get unique dancer counts from all formations
   const uniqueDancerCounts = Array.from(
@@ -532,6 +567,20 @@ export default function App() {
     setEditingFormationId(null);
   };
 
+  const handleAudioFileSelect = async (file: File) => {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const audioCtx = new AudioContext();
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+      setAudioDuration(audioBuffer.duration);
+      audioCtx.close();
+    } catch {
+      setAudioDuration(null);
+    }
+    setAudioFile(file);
+    setShowAudioUpload(false);
+  };
+
   const handleDeleteFormation = (formationId: string) => {
     const deletedIndex = formations.findIndex(f => f.id === formationId);
     const newFormations = formations.filter(f => f.id !== formationId);
@@ -743,7 +792,7 @@ export default function App() {
         setSearchQuery('');
       }
     };
-    
+
     if (showSearchDropdown) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -753,6 +802,16 @@ export default function App() {
   if (showHomeScreen) {
     return <HomeScreen onOpenProject={() => setShowHomeScreen(false)} />;
   }
+
+  // Track timeline container width
+  useEffect(() => {
+    if (!timelineRef.current) return;
+    const observer = new ResizeObserver(entries => {
+      setTimelineContainerWidth(entries[0].contentRect.width);
+    });
+    observer.observe(timelineRef.current);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <div className="size-full flex flex-col bg-[#1d1d1d] overflow-hidden">
@@ -1122,12 +1181,16 @@ export default function App() {
         {/* Timeline Content */}
         <div className="flex-1 relative" ref={timelineRef}>
           {/* Time markers */}
-          <div className="absolute top-0 left-0 right-0 h-full flex pointer-events-none">
-            {[10, 20, 30, 40, 50].map((time) => (
-              <div key={time} className="flex-1 relative">
+          <div className="absolute top-0 left-0 right-0 h-full pointer-events-none">
+            {timeMarkers.map((t) => (
+              <div
+                key={t}
+                className="absolute top-0 bottom-0"
+                style={{ left: `${40 + (t / timelineDuration) * (timelineContainerWidth - 40)}px` }}
+              >
                 <div className="absolute left-0 top-0 bottom-0 w-px bg-white" />
                 <div className="absolute left-2 top-2">
-                  <span className="text-[#b4b1b1] text-[15px]">00:{time.toString().padStart(2, '0')}</span>
+                  <span className="text-[#b4b1b1] text-[15px]">{formatTime(t)}</span>
                 </div>
               </div>
             ))}
@@ -1184,9 +1247,29 @@ export default function App() {
 
           {/* Audio Track */}
           <div className="absolute left-0 bottom-0 right-0 h-1/2">
-            <button className="absolute left-2 top-1/2 -translate-y-1/2 w-6 h-6 bg-[#2a2a2a] border border-[#3a3a3a] rounded flex items-center justify-center hover:bg-[#333] transition-colors">
+            <button
+              className="absolute left-2 top-1/2 -translate-y-1/2 w-6 h-6 bg-[#2a2a2a] border border-[#3a3a3a] rounded flex items-center justify-center hover:bg-[#333] transition-colors"
+              onClick={() => setShowAudioUpload(true)}
+            >
               <Plus size={16} className="text-[#888]" />
             </button>
+            {audioFile && timelineContainerWidth > 0 && (
+              <div
+                className="absolute top-1/2 -translate-y-1/2 h-[39px] bg-[rgba(139,114,190,0.2)] border border-[#8b72be] rounded-[5px] flex items-center px-3 gap-2 overflow-hidden"
+                style={{ left: 40, width: timelineContainerWidth - 40 }}
+              >
+                <span className="text-white text-[13px] truncate flex-1">{audioFile.name}</span>
+                {audioDuration != null && (
+                  <span className="text-[#8b72be] text-[12px] flex-shrink-0">{formatTime(audioDuration)}</span>
+                )}
+                <button
+                  className="text-[#888] hover:text-white transition-colors flex-shrink-0"
+                  onClick={() => { setAudioFile(null); setAudioDuration(null); }}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1225,6 +1308,51 @@ export default function App() {
                 Cancel
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Audio Upload Dialog */}
+      {showAudioUpload && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowAudioUpload(false)}>
+          <div className="bg-[#2a2a2a] border border-[#3a3a3a] rounded-[12px] p-6 w-[380px]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-white text-[16px] font-medium">Upload Audio</h3>
+              <button onClick={() => setShowAudioUpload(false)} className="text-[#888] hover:text-white transition-colors">
+                <X size={18} />
+              </button>
+            </div>
+            <div
+              className="border-2 border-dashed border-[#3a3a3a] rounded-[10px] p-8 flex flex-col items-center gap-3 cursor-pointer hover:border-[#8b72be] transition-colors"
+              onClick={() => audioInputRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const file = e.dataTransfer.files[0];
+                if (file && file.name.endsWith('.wav')) {
+                  handleAudioFileSelect(file);
+                }
+              }}
+            >
+              <div className="w-12 h-12 bg-[#1d1d1d] rounded-full flex items-center justify-center">
+                <Plus size={24} className="text-[#8b72be]" />
+              </div>
+              <p className="text-[#ccc] text-[14px] text-center">Click to browse or drag & drop</p>
+              <p className="text-[#666] text-[12px]">.wav files only</p>
+            </div>
+            <input
+              ref={audioInputRef}
+              type="file"
+              accept=".wav"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  handleAudioFileSelect(file);
+                }
+                e.target.value = '';
+              }}
+            />
           </div>
         </div>
       )}
