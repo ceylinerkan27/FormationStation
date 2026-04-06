@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Settings, Search, Play, User, Plus, ChevronRight, Minus, X, Home, Trash2, Bold, Italic, Underline } from 'lucide-react';
+import { Settings, Search, Play, Pause, User, Plus, ChevronRight, Minus, X, Home, Trash2, Bold, Italic, Underline } from 'lucide-react';
 
 // Animation state for dancer transitions
 interface DancerAnimation {
@@ -225,13 +225,26 @@ export default function App() {
   const [editingProjectTitle, setEditingProjectTitle] = useState(false);
   
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; formationId: string } | null>(null);
-  const [formationShifts, setFormationShifts] = useState<Record<string, number>>({});
 
   const [showAudioUpload, setShowAudioUpload] = useState(false);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioDuration, setAudioDuration] = useState<number | null>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [timelineContainerWidth, setTimelineContainerWidth] = useState(0);
+
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playheadTime, setPlayheadTime] = useState(0);
+  const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
+  const audioBufferRef = useRef<AudioBuffer | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const playStartWallRef = useRef(0);
+  const playStartHeadRef = useRef(0);
+  const animFrameRef = useRef(0);
+  const wasPlayingOnDragRef = useRef(false);
+  const playheadTimeRef = useRef(0);
+  // Stable ref to formation-checking logic so RAF callback is never stale
+  const checkFormationRef = useRef<(time: number) => void>(() => {});
   
   const [showSearchDropdown, setShowSearchDropdown] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -245,7 +258,7 @@ export default function App() {
 
   // Timeline duration: use audio duration if available, else derive from formations or default
   const formationSpanPx = formations.length > 0
-    ? Math.max(...formations.map((f, i) => 40 + i * 180 + f.duration))
+    ? 40 + formations.reduce((s, f) => s + f.duration, 0)
     : 0;
   const timelineDuration = audioDuration != null
     ? audioDuration
@@ -573,52 +586,152 @@ export default function App() {
       const audioCtx = new AudioContext();
       const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
       setAudioDuration(audioBuffer.duration);
+      audioBufferRef.current = audioBuffer;
       audioCtx.close();
     } catch {
       setAudioDuration(null);
+      audioBufferRef.current = null;
     }
     setAudioFile(file);
     setShowAudioUpload(false);
   };
 
-  const handleDeleteFormation = (formationId: string) => {
-    const deletedIndex = formations.findIndex(f => f.id === formationId);
-    const newFormations = formations.filter(f => f.id !== formationId);
-    
-    // Recalculate shifts after deletion
-    const newShifts = { ...formationShifts };
-    delete newShifts[formationId];
-    
-    // If not the last formation, recalculate shifts for all subsequent formations
-    if (deletedIndex < formations.length - 1) {
-      // Remove all shifts for formations after the deleted one and recalculate
-      for (let i = deletedIndex; i < newFormations.length; i++) {
-        delete newShifts[newFormations[i].id];
-      }
-      
-      // Recalculate shifts based on actual positions
-      const prevFormation = deletedIndex > 0 ? newFormations[deletedIndex - 1] : null;
-      if (prevFormation) {
-        const prevLeft = 40 + (deletedIndex - 1) * 180 + (formationShifts[prevFormation.id] || 0);
-        const prevRight = prevLeft + prevFormation.duration;
-        
-        for (let i = deletedIndex; i < newFormations.length; i++) {
-          const currentLeft = 40 + i * 180;
-          const neededShift = Math.max(0, prevRight - currentLeft);
-          if (neededShift > 0) {
-            newShifts[newFormations[i].id] = neededShift;
-          }
-        }
-      }
+  const stopPlayback = () => {
+    audioSourceRef.current?.stop();
+    audioSourceRef.current = null;
+    audioContextRef.current?.close();
+    audioContextRef.current = null;
+    cancelAnimationFrame(animFrameRef.current);
+    setIsPlaying(false);
+  };
+
+  const handlePlayPause = () => {
+    if (isPlaying) {
+      stopPlayback();
+      return;
     }
-    
+
+    const startFrom = playheadTime >= timelineDuration ? 0 : playheadTime;
+    if (startFrom === 0) setPlayheadTime(0);
+
+    // Start audio if a buffer is loaded
+    if (audioBufferRef.current) {
+      const ctx = new AudioContext();
+      audioContextRef.current = ctx;
+      const source = ctx.createBufferSource();
+      source.buffer = audioBufferRef.current;
+      source.connect(ctx.destination);
+      source.start(0, startFrom);
+      audioSourceRef.current = source;
+      source.onended = () => {
+        cancelAnimationFrame(animFrameRef.current);
+        setIsPlaying(false);
+        setPlayheadTime(0);
+      };
+    }
+
+    playStartWallRef.current = performance.now();
+    playStartHeadRef.current = startFrom;
+    setIsPlaying(true);
+
+    const tick = () => {
+      const elapsed = (performance.now() - playStartWallRef.current) / 1000;
+      const newTime = playStartHeadRef.current + elapsed;
+      setPlayheadTime(newTime);
+      checkFormationRef.current(newTime);
+      if (newTime < timelineDuration) {
+        animFrameRef.current = requestAnimationFrame(tick);
+      } else {
+        cancelAnimationFrame(animFrameRef.current);
+        setIsPlaying(false);
+        setPlayheadTime(0);
+      }
+    };
+    animFrameRef.current = requestAnimationFrame(tick);
+  };
+
+  const handlePlayheadMouseDown = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    wasPlayingOnDragRef.current = isPlaying;
+    if (isPlaying) {
+      // Pause RAF + audio but keep isPlaying true so we can resume
+      audioSourceRef.current?.stop();
+      audioSourceRef.current = null;
+      audioContextRef.current?.close();
+      audioContextRef.current = null;
+      cancelAnimationFrame(animFrameRef.current);
+    }
+    setIsDraggingPlayhead(true);
+  };
+
+  const scrubToTime = (clientX: number) => {
+    if (!timelineRef.current) return;
+    const rect = timelineRef.current.getBoundingClientRect();
+    const newTime = Math.max(0, Math.min(timelineDuration,
+      ((clientX - rect.left - 40) / (timelineContainerWidth - 40)) * timelineDuration
+    ));
+    setPlayheadTime(newTime);
+    playheadTimeRef.current = newTime;
+    checkFormationRef.current(newTime);
+  };
+
+  useEffect(() => {
+    if (!isDraggingPlayhead) return;
+
+    const onMouseMove = (e: MouseEvent) => scrubToTime(e.clientX);
+
+    const onMouseUp = () => {
+      setIsDraggingPlayhead(false);
+      if (wasPlayingOnDragRef.current) {
+        // Restart playback from new position
+        const resumeFrom = playheadTimeRef.current;
+        if (audioBufferRef.current) {
+          const ctx = new AudioContext();
+          audioContextRef.current = ctx;
+          const source = ctx.createBufferSource();
+          source.buffer = audioBufferRef.current;
+          source.connect(ctx.destination);
+          source.start(0, resumeFrom);
+          audioSourceRef.current = source;
+          source.onended = () => {
+            cancelAnimationFrame(animFrameRef.current);
+            setIsPlaying(false);
+            setPlayheadTime(0);
+          };
+        }
+        playStartWallRef.current = performance.now();
+        playStartHeadRef.current = resumeFrom;
+
+        const tick = () => {
+          const elapsed = (performance.now() - playStartWallRef.current) / 1000;
+          const newTime = playStartHeadRef.current + elapsed;
+          setPlayheadTime(newTime);
+          checkFormationRef.current(newTime);
+          if (newTime < timelineDuration) {
+            animFrameRef.current = requestAnimationFrame(tick);
+          } else {
+            cancelAnimationFrame(animFrameRef.current);
+            setIsPlaying(false);
+            setPlayheadTime(0);
+          }
+        };
+        animFrameRef.current = requestAnimationFrame(tick);
+      }
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [isDraggingPlayhead, timelineDuration, timelineContainerWidth]);
+
+  const handleDeleteFormation = (formationId: string) => {
+    const newFormations = formations.filter(f => f.id !== formationId);
     setFormations(newFormations);
-    setFormationShifts(newShifts);
-    
     if (selectedFormationId === formationId) {
-      // Select another formation if available
-      const remainingFormations = newFormations;
-      setSelectedFormationId(remainingFormations.length > 0 ? remainingFormations[0].id : null);
+      setSelectedFormationId(newFormations.length > 0 ? newFormations[0].id : null);
     }
     setContextMenu(null);
   };
@@ -659,80 +772,15 @@ export default function App() {
   };
 
   const handleMouseMove = (e: MouseEvent) => {
-    if (draggedFormation && timelineRef.current) {
-      const deltaX = e.clientX - draggedFormation.startX;
-      const newDuration = Math.max(50, draggedFormation.startDuration + deltaX);
-      
-      // Find the index of the dragged formation
-      const draggedIndex = formations.findIndex(f => f.id === draggedFormation.id);
-      if (draggedIndex === -1) return;
-      
-      // Calculate the right edge of the dragged formation
-      const draggedLeft = 40 + draggedIndex * 180;
-      const draggedRight = draggedLeft + newDuration;
-      
-      const newShifts = { ...formationShifts };
-      
-      // Check for overlaps with formations to the right and calculate shifts
-      let cumulativeShift = 0;
-      for (let i = draggedIndex + 1; i < formations.length; i++) {
-        const nextLeft = 40 + i * 180 + (newShifts[formations[i].id] || 0);
-        
-        // If the dragged formation overlaps with this one, push it
-        if (draggedRight > nextLeft) {
-          const overlap = draggedRight - nextLeft;
-          cumulativeShift += overlap;
-          newShifts[formations[i].id] = (newShifts[formations[i].id] || 0) + overlap;
-        }
-      }
-      
-      // If shrinking, try to reduce shifts (pull formations closer)
-      if (deltaX < 0 && formations.length > draggedIndex + 1) {
-        // Recalculate shifts from scratch based on new duration
-        const recalculatedShifts: Record<string, number> = {};
-        const newDraggedRight = draggedLeft + newDuration;
-        
-        for (let i = draggedIndex + 1; i < formations.length; i++) {
-          const prevFormationId = i === draggedIndex + 1 ? draggedFormation.id : formations[i - 1].id;
-          const prevRight = i === draggedIndex + 1 
-            ? newDraggedRight 
-            : 40 + (i - 1) * 180 + formations[i - 1].duration + (recalculatedShifts[prevFormationId] || 0);
-          
-          const currentLeft = 40 + i * 180;
-          const neededShift = Math.max(0, prevRight - currentLeft);
-          
-          if (neededShift > 0) {
-            recalculatedShifts[formations[i].id] = neededShift;
-          }
-        }
-        
-        // Merge with existing shifts for formations beyond the affected ones
-        const mergedShifts = { ...formationShifts, ...recalculatedShifts };
-        // Remove shifts that are no longer needed
-        for (let i = draggedIndex + 1; i < formations.length; i++) {
-          if (!recalculatedShifts[formations[i].id]) {
-            delete mergedShifts[formations[i].id];
-          }
-        }
-        
-        setFormations(formations.map(f => 
-          f.id === draggedFormation.id ? { ...f, duration: newDuration } : f
-        ));
-        setFormationShifts(mergedShifts);
-        return;
-      }
-      
-      // Update the dragged formation's duration and shifts
-      setFormations(formations.map(f => 
-        f.id === draggedFormation.id ? { ...f, duration: newDuration } : f
-      ));
-      setFormationShifts(newShifts);
-    }
+    if (!draggedFormation) return;
+    const deltaX = e.clientX - draggedFormation.startX;
+    const newDuration = Math.max(50, draggedFormation.startDuration + deltaX);
+    setFormations(formations.map(f =>
+      f.id === draggedFormation.id ? { ...f, duration: newDuration } : f
+    ));
   };
 
   const handleMouseUp = () => {
-    // Commit the shifts by updating formation start times if needed
-    // For now, we keep the shifts persistent until formations are rearranged
     setDraggedFormation(null);
   };
 
@@ -799,9 +847,24 @@ export default function App() {
     }
   }, [showSearchDropdown]);
 
-  if (showHomeScreen) {
-    return <HomeScreen onOpenProject={() => setShowHomeScreen(false)} />;
-  }
+  // Keep playheadTimeRef in sync for drag handlers
+  useEffect(() => { playheadTimeRef.current = playheadTime; }, [playheadTime]);
+
+  // Keep formation-check logic fresh for the RAF callback
+  useEffect(() => {
+    checkFormationRef.current = (time: number) => {
+      if (formations.length === 0 || timelineContainerWidth === 0) return;
+      const newIndex = formations.findIndex((f, index) => {
+        const leftPx = 40 + formations.slice(0, index).reduce((s, p) => s + p.duration, 0);
+        const startT = ((leftPx - 40) / (timelineContainerWidth - 40)) * timelineDuration;
+        const endT = startT + (f.duration / (timelineContainerWidth - 40)) * timelineDuration;
+        return time >= startT && time < endT;
+      });
+      if (newIndex !== -1 && formations[newIndex].id !== selectedFormationId) {
+        handleFormationClick(formations[newIndex].id);
+      }
+    };
+  }, [formations, timelineContainerWidth, timelineDuration, selectedFormationId]);
 
   // Track timeline container width
   useEffect(() => {
@@ -811,7 +874,11 @@ export default function App() {
     });
     observer.observe(timelineRef.current);
     return () => observer.disconnect();
-  }, []);
+  }, [showHomeScreen]);
+
+  if (showHomeScreen) {
+    return <HomeScreen onOpenProject={() => setShowHomeScreen(false)} />;
+  }
 
   return (
     <div className="size-full flex flex-col bg-[#1d1d1d] overflow-hidden">
@@ -894,8 +961,14 @@ export default function App() {
           <button className="w-[44px] h-[40px] bg-[#2a2a2a] rounded-[10px] border border-[#3a3a3a] flex items-center justify-center hover:bg-[#333] transition-colors">
             <div className="w-[14px] h-[14px] bg-[#e03535] rounded-[7px]" />
           </button>
-          <button className="w-[44px] h-[40px] bg-[#2a2a2a] rounded-[10px] border border-[#3a3a3a] flex items-center justify-center hover:bg-[#333] transition-colors">
-            <Play size={17} className="text-[#888888]" fill="#888888" />
+          <button
+            className="w-[44px] h-[40px] bg-[#2a2a2a] rounded-[10px] border border-[#3a3a3a] flex items-center justify-center hover:bg-[#333] transition-colors"
+            onClick={handlePlayPause}
+          >
+            {isPlaying
+              ? <Pause size={17} className="text-[#888888]" fill="#888888" />
+              : <Play size={17} className="text-[#888888]" fill="#888888" />
+            }
           </button>
           <div className="relative">
             <button 
@@ -1180,6 +1253,22 @@ export default function App() {
 
         {/* Timeline Content */}
         <div className="flex-1 relative" ref={timelineRef}>
+          {/* Playhead */}
+          {timelineContainerWidth > 0 && (
+            <div
+              className="absolute top-0 bottom-0 z-20 flex flex-col items-center"
+              style={{ left: `${40 + (playheadTime / timelineDuration) * (timelineContainerWidth - 40)}px`, transform: 'translateX(-50%)' }}
+            >
+              {/* Drag handle knob */}
+              <div
+                className="w-3 h-3 bg-[#e03535] rounded-full flex-shrink-0 cursor-ew-resize"
+                onMouseDown={handlePlayheadMouseDown}
+              />
+              {/* Line */}
+              <div className="w-[2px] flex-1 bg-[#e03535] cursor-ew-resize" onMouseDown={handlePlayheadMouseDown} />
+            </div>
+          )}
+
           {/* Time markers */}
           <div className="absolute top-0 left-0 right-0 h-full pointer-events-none">
             {timeMarkers.map((t) => (
@@ -1214,7 +1303,7 @@ export default function App() {
                   selectedFormationId === formation.id ? 'ring-2 ring-[#8b72be]' : ''
                 }`}
                 style={{
-                  left: `${40 + index * 180 + (formationShifts[formation.id] || 0)}px`,
+                  left: `${40 + formations.slice(0, index).reduce((s, p) => s + p.duration, 0)}px`,
                   width: `${formation.duration}px`
                 }}
                 onClick={() => handleFormationClick(formation.id)}
@@ -1264,7 +1353,7 @@ export default function App() {
                 )}
                 <button
                   className="text-[#888] hover:text-white transition-colors flex-shrink-0"
-                  onClick={() => { setAudioFile(null); setAudioDuration(null); }}
+                  onClick={() => { stopPlayback(); setPlayheadTime(0); setAudioFile(null); setAudioDuration(null); audioBufferRef.current = null; }}
                 >
                   <X size={12} />
                 </button>
