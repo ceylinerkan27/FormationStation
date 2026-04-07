@@ -640,7 +640,21 @@ export default function App() {
     return 'webm';
   };
 
-  const getFormationTimelineForDuration = (duration: number) => {
+  const getFormationTimelineForDuration = (duration: number, containerWidth = timelineContainerWidth) => {
+    if (formations.length === 0) return [];
+
+    // Match playback timing math exactly (based on timeline viewport width).
+    if (containerWidth > 40) {
+      return formations.map((formation, index) => {
+        const leftPx = 40 + formations.slice(0, index).reduce((sum, prev) => sum + prev.duration, 0);
+        const start = ((leftPx - 40) / (containerWidth - 40)) * duration;
+        const segmentDuration = (formation.duration / (containerWidth - 40)) * duration;
+        const end = start + segmentDuration;
+        return { formation, start, end, segmentDuration };
+      });
+    }
+
+    // Fallback for initial layout before timeline width is measured.
     const totalUnits = formations.reduce((sum, f) => sum + f.duration, 0);
     const safeTotalUnits = totalUnits > 0 ? totalUnits : 1;
     let cursor = 0;
@@ -665,8 +679,10 @@ export default function App() {
     return time < timeline[0].start ? 0 : timeline.length - 1;
   };
 
-  const getRenderDancersAtTime = (time: number) => {
-    const timeline = getFormationTimelineForDuration(timelineDuration);
+  const getRenderDancersAtTime = (
+    time: number,
+    timeline = getFormationTimelineForDuration(timelineDuration)
+  ) => {
     if (timeline.length === 0) return [];
 
     const safeIndex = getTimelineIndexAtTime(time, timeline);
@@ -729,7 +745,11 @@ export default function App() {
     return rendered;
   };
 
-  const renderStageToCanvas = (ctx: CanvasRenderingContext2D, time: number) => {
+  const renderStageToCanvas = (
+    ctx: CanvasRenderingContext2D,
+    time: number,
+    timeline = getFormationTimelineForDuration(timelineDuration)
+  ) => {
     const width = 800;
     const height = 500;
 
@@ -758,7 +778,7 @@ export default function App() {
       ctx.stroke();
     }
 
-    const dancersToRender = getRenderDancersAtTime(time);
+    const dancersToRender = getRenderDancersAtTime(time, timeline);
     dancersToRender.forEach(({ dancerId, x, y, opacity }) => {
       const dancer = dancers.find((d) => d.id === dancerId);
       if (!dancer) return;
@@ -874,7 +894,8 @@ export default function App() {
       return;
     }
 
-    renderStageToCanvas(ctx, 0);
+    const recordingTimeline = getFormationTimelineForDuration(timelineDuration, timelineContainerWidth);
+    renderStageToCanvas(ctx, recordingStartTime, recordingTimeline);
 
     const canvasStream = canvas.captureStream(30);
     const canvasVideoTrack = canvasStream.getVideoTracks()[0] as MediaStreamTrack & {
@@ -885,7 +906,6 @@ export default function App() {
       canvasVideoTrack.contentHint = 'motion';
     }
     const mixedStream = new MediaStream(canvasStream.getVideoTracks());
-    const recordingTimeline = getFormationTimelineForDuration(timelineDuration);
 
     let recorderAudioCtx: AudioContext | null = null;
     let recorderAudioSource: AudioBufferSourceNode | null = null;
@@ -976,7 +996,7 @@ export default function App() {
       const elapsed = (performance.now() - recordingStart) / 1000;
       const absoluteTime = Math.min(recordingStartTime + elapsed, timelineDuration);
       const timelineIndex = getTimelineIndexAtTime(absoluteTime, recordingTimeline);
-      renderStageToCanvas(ctx, absoluteTime);
+      renderStageToCanvas(ctx, absoluteTime, recordingTimeline);
       // Force a per-frame bitmap difference so Chrome encoder does not collapse updates.
       frameCounter += 1;
       ctx.fillStyle = `rgb(${frameCounter % 255},0,0)`;
@@ -1265,15 +1285,11 @@ export default function App() {
   // Keep formation-check logic fresh for the RAF callback
   useEffect(() => {
     checkFormationRef.current = (time: number) => {
-      if (formations.length === 0 || timelineContainerWidth === 0) return;
-      const newIndex = formations.findIndex((f, index) => {
-        const leftPx = 40 + formations.slice(0, index).reduce((s, p) => s + p.duration, 0);
-        const startT = ((leftPx - 40) / (timelineContainerWidth - 40)) * timelineDuration;
-        const endT = startT + (f.duration / (timelineContainerWidth - 40)) * timelineDuration;
-        return time >= startT && time < endT;
-      });
-      if (newIndex !== -1 && formations[newIndex].id !== selectedFormationId) {
-        handleFormationClick(formations[newIndex].id);
+      if (formations.length === 0) return;
+      const timeline = getFormationTimelineForDuration(timelineDuration);
+      const newIndex = getTimelineIndexAtTime(time, timeline);
+      if (newIndex !== -1 && timeline[newIndex].formation.id !== selectedFormationId) {
+        handleFormationClick(timeline[newIndex].formation.id);
       }
     };
   }, [formations, timelineContainerWidth, timelineDuration, selectedFormationId]);
