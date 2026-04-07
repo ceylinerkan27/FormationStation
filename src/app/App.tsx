@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Settings, Search, Play, Pause, User, Plus, ChevronRight, Minus, X, Home, Trash2, Bold, Italic, Underline } from 'lucide-react';
+import { Settings, Search, Play, Pause, User, Plus, ChevronRight, Minus, X, Home, Trash2, Bold, Italic, Underline, Square } from 'lucide-react';
 
 // Animation state for dancer transitions
 interface DancerAnimation {
@@ -233,6 +233,8 @@ export default function App() {
   const [timelineContainerWidth, setTimelineContainerWidth] = useState(0);
 
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordStatus, setRecordStatus] = useState<string | null>(null);
   const [playheadTime, setPlayheadTime] = useState(0);
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const audioBufferRef = useRef<AudioBuffer | null>(null);
@@ -241,6 +243,8 @@ export default function App() {
   const playStartWallRef = useRef(0);
   const playStartHeadRef = useRef(0);
   const animFrameRef = useRef(0);
+  const recordingFrameRef = useRef(0);
+  const recordingStopRef = useRef<(() => void) | null>(null);
   const wasPlayingOnDragRef = useRef(false);
   const playheadTimeRef = useRef(0);
   // Stable ref to formation-checking logic so RAF callback is never stale
@@ -605,7 +609,307 @@ export default function App() {
     setIsPlaying(false);
   };
 
+  const stopRecording = () => {
+    if (recordingStopRef.current) {
+      recordingStopRef.current();
+      recordingStopRef.current = null;
+    }
+  };
+
+  const pickSupportedRecordingMimeType = () => {
+    const candidates = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm'
+    ];
+    return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? '';
+  };
+
+  const getFormationTimeline = () => {
+    const totalUnits = formations.reduce((sum, f) => sum + f.duration, 0);
+    const safeTotalUnits = totalUnits > 0 ? totalUnits : 1;
+    let cursor = 0;
+    return formations.map((formation) => {
+      const start = (cursor / safeTotalUnits) * timelineDuration;
+      const segmentDuration = (formation.duration / safeTotalUnits) * timelineDuration;
+      const end = start + segmentDuration;
+      cursor += formation.duration;
+      return { formation, start, end, segmentDuration };
+    });
+  };
+
+  type RenderDancer = { x: number; y: number; opacity: number };
+
+  const getRenderDancersAtTime = (time: number) => {
+    const timeline = getFormationTimeline();
+    if (timeline.length === 0) return [];
+
+    const currentIndex = timeline.findIndex((segment, index) => {
+      if (index === timeline.length - 1) return time >= segment.start && time <= segment.end;
+      return time >= segment.start && time < segment.end;
+    });
+    const safeIndex = currentIndex === -1 ? timeline.length - 1 : currentIndex;
+    const current = timeline[safeIndex];
+    const previous = safeIndex > 0 ? timeline[safeIndex - 1] : null;
+
+    if (!previous || current.segmentDuration <= 0) {
+      return current.formation.dancers.map((pos) => ({ dancerId: pos.dancerId, x: pos.x, y: pos.y, opacity: 1 }));
+    }
+
+    const localTime = Math.max(0, time - current.start);
+    const transitionDuration = Math.min(1, current.segmentDuration);
+    if (localTime >= transitionDuration) {
+      return current.formation.dancers.map((pos) => ({ dancerId: pos.dancerId, x: pos.x, y: pos.y, opacity: 1 }));
+    }
+
+    const t = transitionDuration === 0 ? 1 : localTime / transitionDuration;
+    const prevMap = new Map(previous.formation.dancers.map((pos) => [pos.dancerId, pos]));
+    const currentMap = new Map(current.formation.dancers.map((pos) => [pos.dancerId, pos]));
+    const allIds = new Set([...prevMap.keys(), ...currentMap.keys()]);
+
+    const rendered: Array<{ dancerId: string } & RenderDancer> = [];
+    allIds.forEach((dancerId) => {
+      const prevPos = prevMap.get(dancerId);
+      const currentPos = currentMap.get(dancerId);
+
+      if (prevPos && currentPos) {
+        rendered.push({
+          dancerId,
+          x: prevPos.x + (currentPos.x - prevPos.x) * t,
+          y: prevPos.y + (currentPos.y - prevPos.y) * t,
+          opacity: 1
+        });
+        return;
+      }
+
+      if (prevPos && !currentPos) {
+        const edge = getNearestEdge(prevPos.x, prevPos.y);
+        const exitPos = getExitPosition(prevPos.x, prevPos.y, edge);
+        rendered.push({
+          dancerId,
+          x: prevPos.x + (exitPos.x - prevPos.x) * t,
+          y: prevPos.y + (exitPos.y - prevPos.y) * t,
+          opacity: 1 - t
+        });
+        return;
+      }
+
+      if (!prevPos && currentPos) {
+        const edge = getNearestEdge(currentPos.x, currentPos.y);
+        const enterPos = getEnterPosition(currentPos.x, currentPos.y, edge);
+        rendered.push({
+          dancerId,
+          x: enterPos.x + (currentPos.x - enterPos.x) * t,
+          y: enterPos.y + (currentPos.y - enterPos.y) * t,
+          opacity: t
+        });
+      }
+    });
+    return rendered;
+  };
+
+  const renderStageToCanvas = (ctx: CanvasRenderingContext2D, time: number) => {
+    const width = 800;
+    const height = 500;
+
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#28292a';
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#8b72be';
+    ctx.strokeRect(1.5, 1.5, width - 3, height - 3);
+
+    ctx.strokeStyle = '#3a3a3a';
+    ctx.lineWidth = 1;
+    for (let i = 1; i <= 5; i += 1) {
+      const x = (i / 6) * width;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+    }
+    for (let i = 1; i <= 3; i += 1) {
+      const y = (i / 4) * height;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
+
+    const dancersToRender = getRenderDancersAtTime(time);
+    dancersToRender.forEach(({ dancerId, x, y, opacity }) => {
+      const dancer = dancers.find((d) => d.id === dancerId);
+      if (!dancer) return;
+
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
+
+      ctx.fillStyle = '#8b72be';
+      ctx.beginPath();
+      ctx.arc(x, y, 25, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '500 18px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(getDancerInitials(dancer), x, y);
+
+      ctx.restore();
+    });
+  };
+
+  const triggerRecordingDownload = async (blob: Blob) => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const projectSlug = projectTitle.trim().replace(/[^a-zA-Z0-9-_]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'formation-station';
+    const filename = `${projectSlug}-${timestamp}.webm`;
+    const videoFile = new File([blob], filename, { type: blob.type || 'video/webm' });
+
+    const nav = navigator as Navigator & {
+      canShare?: (data?: ShareData) => boolean;
+      share?: (data?: ShareData) => Promise<void>;
+    };
+
+    if (nav.canShare?.({ files: [videoFile] }) && nav.share) {
+      try {
+        await nav.share({
+          files: [videoFile],
+          title: 'Formation recording'
+        });
+        setRecordStatus('Recording ready. Saved via share sheet.');
+        return;
+      } catch {
+        // Fall back to direct download if share is canceled or unavailable.
+      }
+    }
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setRecordStatus(`Saved to downloads as ${filename}`);
+  };
+
+  const handleRecord = async () => {
+    if (isRecording) {
+      stopRecording();
+      return;
+    }
+
+    if (!formations.length) {
+      setRecordStatus('Add at least one formation before recording.');
+      return;
+    }
+
+    if (typeof MediaRecorder === 'undefined') {
+      setRecordStatus('Recording is not supported in this browser.');
+      return;
+    }
+
+    stopPlayback();
+    setPlayheadTime(0);
+    setRecordStatus('Recording...');
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 800;
+    canvas.height = 500;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      setRecordStatus('Could not initialize recording canvas.');
+      return;
+    }
+
+    renderStageToCanvas(ctx, 0);
+
+    const canvasStream = canvas.captureStream(30);
+    const mixedStream = new MediaStream(canvasStream.getVideoTracks());
+
+    let recorderAudioCtx: AudioContext | null = null;
+    let recorderAudioSource: AudioBufferSourceNode | null = null;
+    if (audioBufferRef.current) {
+      recorderAudioCtx = new AudioContext();
+      const destination = recorderAudioCtx.createMediaStreamDestination();
+      recorderAudioSource = recorderAudioCtx.createBufferSource();
+      recorderAudioSource.buffer = audioBufferRef.current;
+      recorderAudioSource.connect(destination);
+      recorderAudioSource.connect(recorderAudioCtx.destination);
+      recorderAudioSource.start(0, 0);
+      destination.stream.getAudioTracks().forEach((track) => mixedStream.addTrack(track));
+    }
+
+    const mimeType = pickSupportedRecordingMimeType();
+    const chunks: BlobPart[] = [];
+    let finalized = false;
+    const recorder = new MediaRecorder(mixedStream, mimeType ? { mimeType } : undefined);
+
+    const cleanup = async () => {
+      cancelAnimationFrame(recordingFrameRef.current);
+      recorderAudioSource?.stop();
+      recorderAudioSource = null;
+      mixedStream.getTracks().forEach((track) => track.stop());
+      if (recorderAudioCtx) {
+        await recorderAudioCtx.close();
+        recorderAudioCtx = null;
+      }
+      recordingStopRef.current = null;
+      setIsRecording(false);
+      setPlayheadTime(0);
+      checkFormationRef.current(0);
+    };
+
+    recordingStopRef.current = () => {
+      cancelAnimationFrame(recordingFrameRef.current);
+      if (recorder.state !== 'inactive') recorder.stop();
+    };
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunks.push(event.data);
+    };
+
+    recorder.onerror = async () => {
+      if (finalized) return;
+      finalized = true;
+      setRecordStatus('Recording failed. Please try again.');
+      await cleanup();
+    };
+
+    recorder.onstop = async () => {
+      if (finalized) return;
+      finalized = true;
+      const recordingBlob = new Blob(chunks, { type: mimeType || 'video/webm' });
+      await cleanup();
+      await triggerRecordingDownload(recordingBlob);
+    };
+
+    recorder.start(250);
+    setIsRecording(true);
+
+    const recordingStart = performance.now();
+    const step = () => {
+      const elapsed = (performance.now() - recordingStart) / 1000;
+      const time = Math.min(elapsed, timelineDuration);
+
+      renderStageToCanvas(ctx, time);
+      setPlayheadTime(time);
+      checkFormationRef.current(time);
+
+      if (time < timelineDuration) {
+        recordingFrameRef.current = requestAnimationFrame(step);
+      } else if (recorder.state !== 'inactive') {
+        recorder.stop();
+      }
+    };
+    recordingFrameRef.current = requestAnimationFrame(step);
+  };
+
   const handlePlayPause = () => {
+    if (isRecording) return;
+
     if (isPlaying) {
       stopPlayback();
       return;
@@ -651,6 +955,7 @@ export default function App() {
   };
 
   const handlePlayheadMouseDown = (e: React.MouseEvent) => {
+    if (isRecording) return;
     e.stopPropagation();
     wasPlayingOnDragRef.current = isPlaying;
     if (isPlaying) {
@@ -850,6 +1155,14 @@ export default function App() {
   // Keep playheadTimeRef in sync for drag handlers
   useEffect(() => { playheadTimeRef.current = playheadTime; }, [playheadTime]);
 
+  // Global cleanup for media resources
+  useEffect(() => {
+    return () => {
+      stopPlayback();
+      stopRecording();
+    };
+  }, []);
+
   // Keep formation-check logic fresh for the RAF callback
   useEffect(() => {
     checkFormationRef.current = (time: number) => {
@@ -958,8 +1271,19 @@ export default function App() {
               </div>
             )}
           </div>
-          <button className="w-[44px] h-[40px] bg-[#2a2a2a] rounded-[10px] border border-[#3a3a3a] flex items-center justify-center hover:bg-[#333] transition-colors">
-            <div className="w-[14px] h-[14px] bg-[#e03535] rounded-[7px]" />
+          <button
+            className={`w-[44px] h-[40px] rounded-[10px] border flex items-center justify-center transition-colors ${
+              isRecording
+                ? 'bg-[#4a2222] border-[#e03535] hover:bg-[#5a2a2a]'
+                : 'bg-[#2a2a2a] border-[#3a3a3a] hover:bg-[#333]'
+            }`}
+            onClick={handleRecord}
+            title={isRecording ? 'Stop recording' : 'Record formation video'}
+          >
+            {isRecording
+              ? <Square size={14} className="text-[#e03535]" fill="#e03535" />
+              : <div className="w-[14px] h-[14px] bg-[#e03535] rounded-[7px]" />
+            }
           </button>
           <button
             className="w-[44px] h-[40px] bg-[#2a2a2a] rounded-[10px] border border-[#3a3a3a] flex items-center justify-center hover:bg-[#333] transition-colors"
@@ -1028,6 +1352,11 @@ export default function App() {
 
         {/* Right: Path Edit Mode Toggle */}
         <div className="flex items-center gap-2">
+          {recordStatus && (
+            <span className={`text-[12px] max-w-[300px] truncate ${isRecording ? 'text-[#e03535]' : 'text-[#999]'}`}>
+              {recordStatus}
+            </span>
+          )}
           <span className="text-[#999] text-[13px] font-medium">path edit mode</span>
           <button
             onClick={() => setIsPathEditMode(!isPathEditMode)}
