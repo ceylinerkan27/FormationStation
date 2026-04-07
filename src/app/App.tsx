@@ -243,7 +243,9 @@ export default function App() {
   const playStartWallRef = useRef(0);
   const playStartHeadRef = useRef(0);
   const animFrameRef = useRef(0);
+  const playSessionRef = useRef(0);
   const recordingFrameRef = useRef(0);
+  const recordingIntervalRef = useRef<number | null>(null);
   const recordingStopRef = useRef<(() => void) | null>(null);
   const wasPlayingOnDragRef = useRef(false);
   const playheadTimeRef = useRef(0);
@@ -255,6 +257,7 @@ export default function App() {
   
   const timelineRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const recordingCanvasRef = useRef<HTMLCanvasElement>(null);
   const peopleDropdownRef = useRef<HTMLDivElement>(null);
   const searchDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -601,7 +604,12 @@ export default function App() {
   };
 
   const stopPlayback = () => {
-    audioSourceRef.current?.stop();
+    playSessionRef.current += 1;
+    try {
+      audioSourceRef.current?.stop();
+    } catch {
+      // Source may already be stopped; ignore.
+    }
     audioSourceRef.current = null;
     audioContextRef.current?.close();
     audioContextRef.current = null;
@@ -618,20 +626,27 @@ export default function App() {
 
   const pickSupportedRecordingMimeType = () => {
     const candidates = [
-      'video/webm;codecs=vp9,opus',
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4',
       'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=vp9,opus',
       'video/webm'
     ];
     return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? '';
   };
 
-  const getFormationTimeline = () => {
+  const getExtensionForMimeType = (mimeType: string) => {
+    if (mimeType.includes('mp4')) return 'mp4';
+    return 'webm';
+  };
+
+  const getFormationTimelineForDuration = (duration: number) => {
     const totalUnits = formations.reduce((sum, f) => sum + f.duration, 0);
     const safeTotalUnits = totalUnits > 0 ? totalUnits : 1;
     let cursor = 0;
     return formations.map((formation) => {
-      const start = (cursor / safeTotalUnits) * timelineDuration;
-      const segmentDuration = (formation.duration / safeTotalUnits) * timelineDuration;
+      const start = (cursor / safeTotalUnits) * duration;
+      const segmentDuration = (formation.duration / safeTotalUnits) * duration;
       const end = start + segmentDuration;
       cursor += formation.duration;
       return { formation, start, end, segmentDuration };
@@ -640,15 +655,21 @@ export default function App() {
 
   type RenderDancer = { x: number; y: number; opacity: number };
 
-  const getRenderDancersAtTime = (time: number) => {
-    const timeline = getFormationTimeline();
-    if (timeline.length === 0) return [];
-
-    const currentIndex = timeline.findIndex((segment, index) => {
-      if (index === timeline.length - 1) return time >= segment.start && time <= segment.end;
+  const getTimelineIndexAtTime = (time: number, timeline: ReturnType<typeof getFormationTimelineForDuration>) => {
+    if (timeline.length === 0) return -1;
+    const index = timeline.findIndex((segment, idx) => {
+      if (idx === timeline.length - 1) return time >= segment.start && time <= segment.end;
       return time >= segment.start && time < segment.end;
     });
-    const safeIndex = currentIndex === -1 ? timeline.length - 1 : currentIndex;
+    if (index !== -1) return index;
+    return time < timeline[0].start ? 0 : timeline.length - 1;
+  };
+
+  const getRenderDancersAtTime = (time: number) => {
+    const timeline = getFormationTimelineForDuration(timelineDuration);
+    if (timeline.length === 0) return [];
+
+    const safeIndex = getTimelineIndexAtTime(time, timeline);
     const current = timeline[safeIndex];
     const previous = safeIndex > 0 ? timeline[safeIndex - 1] : null;
 
@@ -760,11 +781,13 @@ export default function App() {
     });
   };
 
-  const triggerRecordingDownload = async (blob: Blob) => {
+  const triggerRecordingDownload = async (blob: Blob, chosenMimeType: string) => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const projectSlug = projectTitle.trim().replace(/[^a-zA-Z0-9-_]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'formation-station';
-    const filename = `${projectSlug}-${timestamp}.webm`;
-    const videoFile = new File([blob], filename, { type: blob.type || 'video/webm' });
+    const effectiveMimeType = chosenMimeType || blob.type || 'video/webm';
+    const extension = getExtensionForMimeType(effectiveMimeType);
+    const filename = `${projectSlug}-${timestamp}.${extension}`;
+    const videoFile = new File([blob], filename, { type: effectiveMimeType });
 
     const nav = navigator as Navigator & {
       canShare?: (data?: ShareData) => boolean;
@@ -811,11 +834,38 @@ export default function App() {
       return;
     }
 
-    stopPlayback();
-    setPlayheadTime(0);
+    const wasPlayingAtStart = isPlaying;
+    const livePlayheadNow = Math.max(0, Math.min(
+      timelineDuration,
+      playStartHeadRef.current + (performance.now() - playStartWallRef.current) / 1000
+    ));
+    const recordingStartTime = wasPlayingAtStart ? livePlayheadNow : 0;
+    const recordingDuration = Math.max(0, timelineDuration - recordingStartTime);
+
+    if (!wasPlayingAtStart) {
+      stopPlayback();
+      setPlayheadTime(0);
+      playheadTimeRef.current = 0;
+      if (formations[0]) {
+        setPreviousFormationId(null);
+        setSelectedFormationId(formations[0].id);
+      }
+      setIsAnimating(false);
+      setDancerAnimations([]);
+    }
+
+    if (recordingDuration <= 0.01) {
+      setRecordStatus('Playback is already at the end. Move playhead or press play first.');
+      return;
+    }
+
     setRecordStatus('Recording...');
 
-    const canvas = document.createElement('canvas');
+    const canvas = recordingCanvasRef.current;
+    if (!canvas) {
+      setRecordStatus('Recording canvas is not ready yet. Try again.');
+      return;
+    }
     canvas.width = 800;
     canvas.height = 500;
     const ctx = canvas.getContext('2d');
@@ -827,7 +877,15 @@ export default function App() {
     renderStageToCanvas(ctx, 0);
 
     const canvasStream = canvas.captureStream(30);
+    const canvasVideoTrack = canvasStream.getVideoTracks()[0] as MediaStreamTrack & {
+      requestFrame?: () => void;
+      contentHint?: string;
+    };
+    if (canvasVideoTrack && 'contentHint' in canvasVideoTrack) {
+      canvasVideoTrack.contentHint = 'motion';
+    }
     const mixedStream = new MediaStream(canvasStream.getVideoTracks());
+    const recordingTimeline = getFormationTimelineForDuration(timelineDuration);
 
     let recorderAudioCtx: AudioContext | null = null;
     let recorderAudioSource: AudioBufferSourceNode | null = null;
@@ -838,18 +896,34 @@ export default function App() {
       recorderAudioSource.buffer = audioBufferRef.current;
       recorderAudioSource.connect(destination);
       recorderAudioSource.connect(recorderAudioCtx.destination);
-      recorderAudioSource.start(0, 0);
+      recorderAudioSource.start(0, recordingStartTime);
       destination.stream.getAudioTracks().forEach((track) => mixedStream.addTrack(track));
     }
 
     const mimeType = pickSupportedRecordingMimeType();
+    if (!mimeType.startsWith('video/mp4')) {
+      setRecordStatus('Recording... (MP4 not supported in this browser, exporting WebM)');
+    }
     const chunks: BlobPart[] = [];
     let finalized = false;
-    const recorder = new MediaRecorder(mixedStream, mimeType ? { mimeType } : undefined);
+    const recorder = new MediaRecorder(
+      mixedStream,
+      mimeType
+        ? { mimeType, videoBitsPerSecond: 4_000_000 }
+        : { videoBitsPerSecond: 4_000_000 }
+    );
 
     const cleanup = async () => {
       cancelAnimationFrame(recordingFrameRef.current);
-      recorderAudioSource?.stop();
+      if (recordingIntervalRef.current != null) {
+        window.clearInterval(recordingIntervalRef.current);
+        recordingIntervalRef.current = null;
+      }
+      try {
+        recorderAudioSource?.stop();
+      } catch {
+        // Source may already be stopped; ignore.
+      }
       recorderAudioSource = null;
       mixedStream.getTracks().forEach((track) => track.stop());
       if (recorderAudioCtx) {
@@ -858,12 +932,18 @@ export default function App() {
       }
       recordingStopRef.current = null;
       setIsRecording(false);
-      setPlayheadTime(0);
-      checkFormationRef.current(0);
+      if (!wasPlayingAtStart) {
+        setPlayheadTime(0);
+        checkFormationRef.current(0);
+      }
     };
 
     recordingStopRef.current = () => {
       cancelAnimationFrame(recordingFrameRef.current);
+      if (recordingIntervalRef.current != null) {
+        window.clearInterval(recordingIntervalRef.current);
+        recordingIntervalRef.current = null;
+      }
       if (recorder.state !== 'inactive') recorder.stop();
     };
 
@@ -883,28 +963,41 @@ export default function App() {
       finalized = true;
       const recordingBlob = new Blob(chunks, { type: mimeType || 'video/webm' });
       await cleanup();
-      await triggerRecordingDownload(recordingBlob);
+      await triggerRecordingDownload(recordingBlob, mimeType || recordingBlob.type);
     };
 
     recorder.start(250);
     setIsRecording(true);
 
     const recordingStart = performance.now();
+    let frameCounter = 0;
     const step = () => {
+      if (recorder.state === 'inactive') return;
       const elapsed = (performance.now() - recordingStart) / 1000;
-      const time = Math.min(elapsed, timelineDuration);
+      const absoluteTime = Math.min(recordingStartTime + elapsed, timelineDuration);
+      const timelineIndex = getTimelineIndexAtTime(absoluteTime, recordingTimeline);
+      renderStageToCanvas(ctx, absoluteTime);
+      // Force a per-frame bitmap difference so Chrome encoder does not collapse updates.
+      frameCounter += 1;
+      ctx.fillStyle = `rgb(${frameCounter % 255},0,0)`;
+      ctx.fillRect(0, 0, 1, 1);
+      canvasVideoTrack.requestFrame?.();
+      if (!wasPlayingAtStart) {
+        if (timelineIndex !== -1) {
+          const visibleFormationId = recordingTimeline[timelineIndex].formation.id;
+          setSelectedFormationId((currentId) => currentId === visibleFormationId ? currentId : visibleFormationId);
+        }
+        setPlayheadTime(absoluteTime);
+      }
 
-      renderStageToCanvas(ctx, time);
-      setPlayheadTime(time);
-      checkFormationRef.current(time);
-
-      if (time < timelineDuration) {
-        recordingFrameRef.current = requestAnimationFrame(step);
-      } else if (recorder.state !== 'inactive') {
+      if (absoluteTime >= timelineDuration && recorder.state !== 'inactive') {
         recorder.stop();
       }
     };
-    recordingFrameRef.current = requestAnimationFrame(step);
+    const frameMs = 1000 / 30;
+    canvasVideoTrack.requestFrame?.();
+    step();
+    recordingIntervalRef.current = window.setInterval(step, frameMs);
   };
 
   const handlePlayPause = () => {
@@ -936,9 +1029,12 @@ export default function App() {
 
     playStartWallRef.current = performance.now();
     playStartHeadRef.current = startFrom;
+    const playSessionId = playSessionRef.current + 1;
+    playSessionRef.current = playSessionId;
     setIsPlaying(true);
 
     const tick = () => {
+      if (playSessionRef.current !== playSessionId) return;
       const elapsed = (performance.now() - playStartWallRef.current) / 1000;
       const newTime = playStartHeadRef.current + elapsed;
       setPlayheadTime(newTime);
@@ -1006,8 +1102,11 @@ export default function App() {
         }
         playStartWallRef.current = performance.now();
         playStartHeadRef.current = resumeFrom;
+        const playSessionId = playSessionRef.current + 1;
+        playSessionRef.current = playSessionId;
 
         const tick = () => {
+          if (playSessionRef.current !== playSessionId) return;
           const elapsed = (performance.now() - playStartWallRef.current) / 1000;
           const newTime = playStartHeadRef.current + elapsed;
           setPlayheadTime(newTime);
@@ -1786,6 +1885,21 @@ export default function App() {
           </button>
         </div>
       )}
+
+      {/* Recording Preview Canvas (Chrome capture reliability) */}
+      <div
+        className={`fixed right-3 bottom-3 z-50 rounded border border-[#3a3a3a] bg-[#111] overflow-hidden transition-opacity ${
+          isRecording ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
+        style={{ width: '200px', height: '125px' }}
+      >
+        <canvas
+          ref={recordingCanvasRef}
+          width={800}
+          height={500}
+          className="w-full h-full"
+        />
+      </div>
     </div>
   );
 }
