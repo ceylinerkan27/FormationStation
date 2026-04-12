@@ -42,7 +42,7 @@ Follow these steps to reproduce the core behaviors shown in evidence clippings.
 
 The timeline should show at least 3 formation blocks and stage layout changes between formations.
 
-### C. Add audio
+### Add audio
 
 1. In the `Audio` row, click `+`.
 2. Upload a `.wav` file.

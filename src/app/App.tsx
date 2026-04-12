@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Settings, Search, Play, Pause, User, Plus, ChevronRight, Minus, X, Home, Trash2, Bold, Italic, Underline, Square } from 'lucide-react';
+import { Settings, Search, Play, Pause, User, Plus, ChevronRight, Minus, X, Home, Trash2, Bold, Italic, Underline, Square, Undo2 } from 'lucide-react';
 
 // Animation state for dancer transitions
 interface DancerAnimation {
@@ -17,6 +17,7 @@ interface Dancer {
   id: string;
   name: string;
   number: number;
+  color: string;
 }
 
 interface DancerPosition {
@@ -32,6 +33,13 @@ interface Formation {
   duration: number;
   notes: string;
   dancers: DancerPosition[];
+}
+
+interface AppSnapshot {
+  formations: Formation[];
+  dancers: Dancer[];
+  selectedFormationId: string | null;
+  previousFormationId: string | null;
 }
 
 // Home Screen Component
@@ -201,6 +209,17 @@ function HomeScreen({ onOpenProject }: { onOpenProject: () => void }) {
   );
 }
 
+const DANCER_COLOR_PALETTE = [
+  '#8b72be',
+  '#f59e0b',
+  '#ef4444',
+  '#22c55e',
+  '#3b82f6',
+  '#ec4899',
+  '#14b8a6',
+  '#eab308'
+];
+
 export default function App() {
   const [showHomeScreen, setShowHomeScreen] = useState(true);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
@@ -218,13 +237,15 @@ export default function App() {
   const [selectedDancerIds, setSelectedDancerIds] = useState<Set<string>>(new Set());
   const [draggedDancer, setDraggedDancer] = useState<{ dancerId: string; offsetX: number; offsetY: number } | null>(null);
   const [showPeopleDropdown, setShowPeopleDropdown] = useState(false);
-  const [editingDancerId, setEditingDancerId] = useState<string | null>(null);
   const [removalDialog, setRemovalDialog] = useState<{ dancerId: string; dancerName: string } | null>(null);
   
   const [projectTitle, setProjectTitle] = useState('Hip Hop Piece Formations');
   const [editingProjectTitle, setEditingProjectTitle] = useState(false);
   
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; formationId: string } | null>(null);
+  const [formationDeleteDialog, setFormationDeleteDialog] = useState<{ formationId: string; formationName: string } | null>(null);
+  const undoStackRef = useRef<AppSnapshot[]>([]);
+  const [undoDepth, setUndoDepth] = useState(0);
 
   const [showAudioUpload, setShowAudioUpload] = useState(false);
   const [audioFile, setAudioFile] = useState<File | null>(null);
@@ -263,6 +284,42 @@ export default function App() {
 
   const selectedFormation = formations.find(f => f.id === selectedFormationId);
 
+  const cloneFormations = (source: Formation[]) => source.map((formation) => ({
+    ...formation,
+    dancers: formation.dancers.map((dancerPos) => ({ ...dancerPos }))
+  }));
+
+  const cloneDancers = (source: Dancer[]) => source.map((dancer) => ({ ...dancer }));
+
+  const pushUndoSnapshot = () => {
+    const snapshot: AppSnapshot = {
+      formations: cloneFormations(formations),
+      dancers: cloneDancers(dancers),
+      selectedFormationId,
+      previousFormationId
+    };
+    undoStackRef.current.push(snapshot);
+    if (undoStackRef.current.length > 100) {
+      undoStackRef.current.shift();
+    }
+    setUndoDepth(undoStackRef.current.length);
+  };
+
+  const handleUndo = () => {
+    if (isRecording) return;
+    if (isPlaying) stopPlayback();
+    const snapshot = undoStackRef.current.pop();
+    if (!snapshot) return;
+    setFormations(snapshot.formations);
+    setDancers(snapshot.dancers);
+    setSelectedFormationId(snapshot.selectedFormationId);
+    setPreviousFormationId(snapshot.previousFormationId);
+    setDancerAnimations([]);
+    setIsAnimating(false);
+    setUndoDepth(undoStackRef.current.length);
+    setRecordStatus('Undid last change.');
+  };
+
   // Timeline duration: use audio duration if available, else derive from formations or default
   const formationSpanPx = formations.length > 0
     ? 40 + formations.reduce((s, f) => s + f.duration, 0)
@@ -298,6 +355,7 @@ export default function App() {
   ).sort((a, b) => b - a); // Sort descending
 
   const createNewFormation = () => {
+    pushUndoSnapshot();
     // Copy previous formation's dancers if there is one
     const previousFormation = formations.length > 0 ? formations[formations.length - 1] : null;
     
@@ -325,11 +383,14 @@ export default function App() {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     
+    pushUndoSnapshot();
+
     // Create new dancer
     const newDancer: Dancer = {
       id: `dancer-${Date.now()}`,
       name: `${dancers.length + 1}`,
-      number: dancers.length + 1
+      number: dancers.length + 1,
+      color: DANCER_COLOR_PALETTE[dancers.length % DANCER_COLOR_PALETTE.length]
     };
     
     setDancers([...dancers, newDancer]);
@@ -361,6 +422,7 @@ export default function App() {
     e.stopPropagation();
     const offsetX = e.clientX - (stageRef.current?.getBoundingClientRect().left || 0) - currentX;
     const offsetY = e.clientY - (stageRef.current?.getBoundingClientRect().top || 0) - currentY;
+    pushUndoSnapshot();
     setDraggedDancer({ dancerId, offsetX, offsetY });
   };
 
@@ -405,6 +467,13 @@ export default function App() {
     setDancers(dancers.map(d => d.id === dancerId ? { ...d, name: newName } : d));
   };
 
+  const handleDancerColorChange = (dancerId: string, newColor: string) => {
+    const dancer = dancers.find((d) => d.id === dancerId);
+    if (!dancer || dancer.color === newColor) return;
+    pushUndoSnapshot();
+    setDancers(dancers.map((d) => (d.id === dancerId ? { ...d, color: newColor } : d)));
+  };
+
   const handleDancerClickInDropdown = (dancerId: string) => {
     if (!selectedFormationId || !stageRef.current) return;
     
@@ -412,6 +481,7 @@ export default function App() {
     const dancerExists = selectedFormation?.dancers.some(d => d.dancerId === dancerId);
     
     if (!dancerExists) {
+      pushUndoSnapshot();
       // Add dancer to center of stage
       const centerX = 400;
       const centerY = 250;
@@ -430,22 +500,24 @@ export default function App() {
 
   const handleRemoveDancer = (option: 'all' | 'this' | 'cancel') => {
     if (!removalDialog) return;
-    
+
     if (option === 'all') {
+      pushUndoSnapshot();
       // Remove from all formations
-      setFormations(formations.map(f => ({
+      setFormations((prevFormations) => prevFormations.map((f) => ({
         ...f,
-        dancers: f.dancers.filter(d => d.dancerId !== removalDialog.dancerId)
+        dancers: f.dancers.filter((d) => d.dancerId !== removalDialog.dancerId)
       })));
       // Remove from dancers list
-      setDancers(dancers.filter(d => d.id !== removalDialog.dancerId));
+      setDancers((prevDancers) => prevDancers.filter((d) => d.id !== removalDialog.dancerId));
     } else if (option === 'this' && selectedFormationId) {
+      pushUndoSnapshot();
       // Remove from current formation only
-      setFormations(formations.map(f => {
+      setFormations((prevFormations) => prevFormations.map((f) => {
         if (f.id === selectedFormationId) {
           return {
             ...f,
-            dancers: f.dancers.filter(d => d.dancerId !== removalDialog.dancerId)
+            dancers: f.dancers.filter((d) => d.dancerId !== removalDialog.dancerId)
           };
         }
         return f;
@@ -786,7 +858,7 @@ export default function App() {
       ctx.save();
       ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
 
-      ctx.fillStyle = '#8b72be';
+      ctx.fillStyle = dancer.color;
       ctx.beginPath();
       ctx.arc(x, y, 25, 0, Math.PI * 2);
       ctx.fill();
@@ -1151,12 +1223,32 @@ export default function App() {
     };
   }, [isDraggingPlayhead, timelineDuration, timelineContainerWidth]);
 
-  const handleDeleteFormation = (formationId: string) => {
-    const newFormations = formations.filter(f => f.id !== formationId);
-    setFormations(newFormations);
-    if (selectedFormationId === formationId) {
-      setSelectedFormationId(newFormations.length > 0 ? newFormations[0].id : null);
+  const executeDeleteFormation = (formationId: string) => {
+    const newFormations = formations.filter((f) => f.id !== formationId);
+    if (newFormations.length === formations.length) {
+      setContextMenu(null);
+      setFormationDeleteDialog(null);
+      return;
     }
+    pushUndoSnapshot();
+    setFormations(newFormations);
+    setSelectedFormationId((currentSelectedId) => {
+      if (currentSelectedId && newFormations.some((f) => f.id === currentSelectedId)) {
+        return currentSelectedId;
+      }
+      return newFormations.length > 0 ? newFormations[0].id : null;
+    });
+    setContextMenu(null);
+    setFormationDeleteDialog(null);
+  };
+
+  const openFormationDeleteDialog = (formationId: string) => {
+    const formation = formations.find((f) => f.id === formationId);
+    if (!formation) return;
+    setFormationDeleteDialog({
+      formationId: formation.id,
+      formationName: formation.name
+    });
     setContextMenu(null);
   };
 
@@ -1183,10 +1275,26 @@ export default function App() {
     setEditingNotes(false);
   };
 
+  const setFormationDurationById = (formationId: string, nextDuration: number) => {
+    const clampedDuration = Math.max(50, Math.round(nextDuration));
+    setFormations(formations.map((f) =>
+      f.id === formationId ? { ...f, duration: clampedDuration } : f
+    ));
+  };
+
+  const adjustSelectedFormationDuration = (delta: number) => {
+    if (!selectedFormationId) return;
+    const current = formations.find((f) => f.id === selectedFormationId);
+    if (!current) return;
+    pushUndoSnapshot();
+    setFormationDurationById(selectedFormationId, current.duration + delta);
+  };
+
   const handleResizeStart = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     const formation = formations.find(f => f.id === id);
     if (formation) {
+      pushUndoSnapshot();
       setDraggedFormation({
         id,
         startX: e.clientX,
@@ -1237,7 +1345,6 @@ export default function App() {
     const handleClickOutside = (e: MouseEvent) => {
       if (peopleDropdownRef.current && !peopleDropdownRef.current.contains(e.target as Node)) {
         setShowPeopleDropdown(false);
-        setEditingDancerId(null);
       }
     };
     
@@ -1270,6 +1377,33 @@ export default function App() {
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [showSearchDropdown]);
+
+  // Keyboard shortcuts: delete selected formation + undo.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isTypingTarget = !!target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable
+      );
+
+      if (!isTypingTarget && e.key === 'Delete' && selectedFormationId && !formationDeleteDialog) {
+        e.preventDefault();
+        openFormationDeleteDialog(selectedFormationId);
+        return;
+      }
+
+      const isUndo = (e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'z';
+      if (!isTypingTarget && isUndo && undoStackRef.current.length > 0) {
+        e.preventDefault();
+        handleUndo();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedFormationId, formationDeleteDialog]);
 
   // Keep playheadTimeRef in sync for drag handlers
   useEffect(() => { playheadTimeRef.current = playheadTime; }, [playheadTime]);
@@ -1344,6 +1478,18 @@ export default function App() {
       <div className="h-[56px] border-b border-[#252525] flex items-center justify-between px-4">
         {/* Left: Icon Buttons */}
         <div className="flex gap-2">
+          <button
+            className={`w-[44px] h-[40px] rounded-[10px] border flex items-center justify-center transition-colors ${
+              undoDepth > 0
+                ? 'bg-[#2a2a2a] border-[#3a3a3a] hover:bg-[#333]'
+                : 'bg-[#232323] border-[#2f2f2f] opacity-50 cursor-not-allowed'
+            }`}
+            onClick={handleUndo}
+            disabled={undoDepth === 0}
+            title="Undo (Ctrl/Cmd+Z)"
+          >
+            <Undo2 size={16} className="text-[#888888]" />
+          </button>
           <div className="relative">
             <button 
               className="w-[44px] h-[40px] bg-[#2a2a2a] rounded-[10px] border border-[#3a3a3a] flex items-center justify-center hover:bg-[#333] transition-colors"
@@ -1421,7 +1567,7 @@ export default function App() {
             {showPeopleDropdown && (
               <div 
                 ref={peopleDropdownRef}
-                className="absolute top-[calc(100%+4px)] left-0 bg-[#2a2a2a] border border-[#3a3a3a] rounded-[8px] shadow-lg z-50 min-w-[200px]"
+                className="absolute top-[calc(100%+4px)] left-0 bg-[#2a2a2a] border border-[#3a3a3a] rounded-[8px] shadow-lg z-50 min-w-[260px]"
               >
                 <div className="p-2">
                   {dancers.length === 0 ? (
@@ -1429,27 +1575,33 @@ export default function App() {
                   ) : (
                     dancers.map(dancer => (
                       <div key={dancer.id} className="flex items-center gap-2 px-2 py-1.5 hover:bg-[#333] rounded">
-                        {editingDancerId === dancer.id ? (
+                        <label className="relative w-5 h-5 rounded-full border border-[#555] overflow-hidden cursor-pointer">
                           <input
-                            autoFocus
-                            type="text"
-                            className="flex-1 bg-[#1d1d1d] text-white text-[13px] px-2 py-1 rounded outline-none"
-                            value={dancer.name}
-                            onChange={(e) => handleDancerNameChange(dancer.id, e.target.value)}
-                            onBlur={() => setEditingDancerId(null)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') setEditingDancerId(null);
-                            }}
+                            type="color"
+                            className="absolute inset-0 opacity-0 cursor-pointer"
+                            value={dancer.color}
+                            onChange={(e) => handleDancerColorChange(dancer.id, e.target.value)}
+                            title={`Set ${dancer.name} color`}
                           />
-                        ) : (
-                          <div 
-                            className="flex-1 text-white text-[13px] cursor-pointer"
-                            onDoubleClick={() => setEditingDancerId(dancer.id)}
-                            onClick={() => handleDancerClickInDropdown(dancer.id)}
-                          >
-                            {dancer.name}
-                          </div>
-                        )}
+                          <span
+                            className="absolute inset-0"
+                            style={{ backgroundColor: dancer.color }}
+                          />
+                        </label>
+                        <input
+                          type="text"
+                          className="flex-1 bg-[#1d1d1d] text-white text-[13px] px-2 py-1 rounded outline-none border border-[#3a3a3a] focus:border-[#8b72be]"
+                          value={dancer.name}
+                          onChange={(e) => handleDancerNameChange(dancer.id, e.target.value)}
+                          placeholder="Dancer name"
+                        />
+                        <button
+                          className="w-5 h-5 flex items-center justify-center hover:bg-[#444] rounded transition-colors"
+                          onClick={() => handleDancerClickInDropdown(dancer.id)}
+                          title="Add dancer to selected formation"
+                        >
+                          <Plus size={12} className="text-[#8b72be]" />
+                        </button>
                         <button
                           className="w-5 h-5 flex items-center justify-center hover:bg-[#444] rounded transition-colors"
                           onClick={() => setRemovalDialog({ dancerId: dancer.id, dancerName: dancer.name })}
@@ -1467,6 +1619,26 @@ export default function App() {
 
         {/* Right: Path Edit Mode Toggle */}
         <div className="flex items-center gap-2">
+          {selectedFormation && (
+            <div className="flex items-center gap-1 mr-1">
+              <span className="text-[#999] text-[12px] uppercase tracking-wide">length</span>
+              <button
+                className="w-5 h-5 rounded border border-[#444] text-[#999] hover:bg-[#333] transition-colors flex items-center justify-center"
+                onClick={() => adjustSelectedFormationDuration(-20)}
+                title="Shorten selected formation"
+              >
+                <Minus size={10} />
+              </button>
+              <span className="text-[#b4b1b1] text-[12px] w-[34px] text-center">{Math.round(selectedFormation.duration)}</span>
+              <button
+                className="w-5 h-5 rounded border border-[#444] text-[#999] hover:bg-[#333] transition-colors flex items-center justify-center"
+                onClick={() => adjustSelectedFormationDuration(20)}
+                title="Lengthen selected formation"
+              >
+                <Plus size={10} />
+              </button>
+            </div>
+          )}
           {recordStatus && (
             <span className={`text-[12px] max-w-[300px] truncate ${isRecording ? 'text-[#e03535]' : 'text-[#999]'}`}>
               {recordStatus}
@@ -1519,11 +1691,12 @@ export default function App() {
                     return (
                       <div
                         key={dancerPos.dancerId}
-                        className="absolute w-[18px] h-[18px] bg-[#8b72be] rounded-full flex items-center justify-center text-white text-[8px] font-medium"
+                        className="absolute w-[18px] h-[18px] rounded-full flex items-center justify-center text-white text-[8px] font-medium"
                         style={{
                           left: `${(dancerPos.x / 800) * 100}%`,
                           top: `${(dancerPos.y / 500) * 100}%`,
-                          transform: 'translate(-50%, -50%)'
+                          transform: 'translate(-50%, -50%)',
+                          backgroundColor: dancer.color
                         }}
                       >
                         {getDancerInitials(dancer)}
@@ -1596,14 +1769,15 @@ export default function App() {
                     return (
                       <div
                         key={dancerPos.dancerId}
-                        className={`dancer-circle absolute w-[50px] h-[50px] bg-[#8b72be] rounded-full flex items-center justify-center text-white text-[18px] font-medium cursor-move select-none transition-all duration-1000 ease-in-out ${
+                        className={`dancer-circle absolute w-[50px] h-[50px] rounded-full flex items-center justify-center text-white text-[18px] font-medium cursor-move select-none transition-all duration-1000 ease-in-out ${
                           isSelected ? 'ring-4 ring-white' : ''
                         }`}
                         style={{
                           left: `${animation.endX}px`,
                           top: `${animation.endY}px`,
                           transform: 'translate(-50%, -50%)',
-                          opacity: animation.type === 'exit' ? 0 : 1
+                          opacity: animation.type === 'exit' ? 0 : 1,
+                          backgroundColor: dancer.color
                         }}
                         onClick={(e) => handleDancerClick(e, dancer.id)}
                         onMouseDown={(e) => handleDancerDragStart(e, dancer.id, dancerPos.x, dancerPos.y)}
@@ -1616,13 +1790,14 @@ export default function App() {
                   return (
                     <div
                       key={dancerPos.dancerId}
-                      className={`dancer-circle absolute w-[50px] h-[50px] bg-[#8b72be] rounded-full flex items-center justify-center text-white text-[18px] font-medium cursor-move select-none ${
+                      className={`dancer-circle absolute w-[50px] h-[50px] rounded-full flex items-center justify-center text-white text-[18px] font-medium cursor-move select-none ${
                         isSelected ? 'ring-4 ring-white' : ''
                       }`}
                       style={{
                         left: `${dancerPos.x}px`,
                         top: `${dancerPos.y}px`,
-                        transform: 'translate(-50%, -50%)'
+                        transform: 'translate(-50%, -50%)',
+                        backgroundColor: dancer.color
                       }}
                       onClick={(e) => handleDancerClick(e, dancer.id)}
                       onMouseDown={(e) => handleDancerDragStart(e, dancer.id, dancerPos.x, dancerPos.y)}
@@ -1640,12 +1815,13 @@ export default function App() {
                   return (
                     <div
                       key={animation.dancerId}
-                      className="absolute w-[50px] h-[50px] bg-[#8b72be] rounded-full flex items-center justify-center text-white text-[18px] font-medium transition-all duration-1000 ease-in-out"
+                      className="absolute w-[50px] h-[50px] rounded-full flex items-center justify-center text-white text-[18px] font-medium transition-all duration-1000 ease-in-out"
                       style={{
                         left: `${animation.endX}px`,
                         top: `${animation.endY}px`,
                         transform: 'translate(-50%, -50%)',
-                        opacity: 1
+                        opacity: 1,
+                        backgroundColor: dancer.color
                       }}
                     >
                       {getDancerInitials(dancer)}
@@ -1752,6 +1928,7 @@ export default function App() {
                 }}
                 onClick={() => handleFormationClick(formation.id)}
                 onDoubleClick={() => handleFormationDoubleClick(formation.id)}
+                onContextMenu={(e) => handleFormationContextMenu(e, formation.id)}
               >
                 {editingFormationId === formation.id ? (
                   <input
@@ -1845,6 +2022,40 @@ export default function App() {
         </div>
       )}
 
+      {/* Formation Delete Dialog */}
+      {formationDeleteDialog && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setFormationDeleteDialog(null)}>
+          <div className="bg-[#2a2a2a] border border-[#3a3a3a] rounded-[12px] p-6 min-w-[360px]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-white text-[16px] font-medium">Delete {formationDeleteDialog.formationName}?</h3>
+              <button
+                onClick={() => setFormationDeleteDialog(null)}
+                className="text-[#888] hover:text-white transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <p className="text-[#999] text-[13px] mb-5">
+              This removes the formation block from the timeline.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setFormationDeleteDialog(null)}
+                className="bg-[#1d1d1d] hover:bg-[#333] text-[#999] px-4 py-2.5 rounded-[8px] text-[14px] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => executeDeleteFormation(formationDeleteDialog.formationId)}
+                className="bg-[#e03535] hover:bg-[#c92f2f] text-white px-4 py-2.5 rounded-[8px] text-[14px] transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Audio Upload Dialog */}
       {showAudioUpload && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowAudioUpload(false)}>
@@ -1892,10 +2103,15 @@ export default function App() {
 
       {/* Context Menu */}
       {contextMenu && (
-        <div className="fixed bg-[#2a2a2a] border border-[#3a3a3a] rounded-[8px] shadow-lg z-50" style={{ left: contextMenu.x, top: contextMenu.y }}>
+        <div
+          className="fixed bg-[#2a2a2a] border border-[#3a3a3a] rounded-[8px] shadow-lg z-50"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
           <button
             className="w-full px-4 py-2 text-white hover:bg-[#333] transition-colors"
-            onClick={() => handleDeleteFormation(contextMenu.formationId)}
+            onClick={() => openFormationDeleteDialog(contextMenu.formationId)}
           >
             Delete Formation
           </button>
