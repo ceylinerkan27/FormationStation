@@ -26,6 +26,23 @@ interface DancerPosition {
   y: number;
 }
 
+interface DraggedDancerState {
+  dancerIds: string[];
+  anchorId: string;
+  offsetX: number;
+  offsetY: number;
+  initialPositions: Record<string, { x: number; y: number }>;
+  preserveMultiSelectionOnClick: boolean;
+}
+
+interface SelectionBox {
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+  additive: boolean;
+}
+
 interface Formation {
   id: string;
   name: string;
@@ -241,6 +258,7 @@ const STAGE_MIN_HEIGHT = 240;
 const STAGE_MAX_HEIGHT = 1000;
 const GRID_MIN_LINES = 1;
 const GRID_MAX_LINES = 16;
+const STAGE_DRAG_THRESHOLD = 4;
 
 export default function App() {
   const [showHomeScreen, setShowHomeScreen] = useState(true);
@@ -257,7 +275,8 @@ export default function App() {
   
   const [dancers, setDancers] = useState<Dancer[]>([]);
   const [selectedDancerIds, setSelectedDancerIds] = useState<Set<string>>(new Set());
-  const [draggedDancer, setDraggedDancer] = useState<{ dancerId: string; offsetX: number; offsetY: number } | null>(null);
+  const [draggedDancer, setDraggedDancer] = useState<DraggedDancerState | null>(null);
+  const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [showPeopleDropdown, setShowPeopleDropdown] = useState(false);
   const [removalDialog, setRemovalDialog] = useState<{ dancerId: string; dancerName: string } | null>(null);
   
@@ -307,6 +326,8 @@ export default function App() {
   const recordingCanvasRef = useRef<HTMLCanvasElement>(null);
   const peopleDropdownRef = useRef<HTMLDivElement>(null);
   const searchDropdownRef = useRef<HTMLDivElement>(null);
+  const dragMovedRef = useRef(false);
+  const dragUndoPushedRef = useRef(false);
 
   const selectedFormation = formations.find(f => f.id === selectedFormationId);
 
@@ -316,6 +337,16 @@ export default function App() {
 
   const safeStageWidth = Math.max(1, stageConfig.width);
   const safeStageHeight = Math.max(1, stageConfig.height);
+
+  const getStageCoordinates = (clientX: number, clientY: number) => {
+    const rect = stageRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+
+    return {
+      x: Math.max(0, Math.min(safeStageWidth, clientX - rect.left)),
+      y: Math.max(0, Math.min(safeStageHeight, clientY - rect.top))
+    };
+  };
 
   const gcd = (a: number, b: number): number => {
     let x = Math.abs(Math.round(a));
@@ -496,20 +527,11 @@ export default function App() {
     // New formations at the end don't need shifts as they're placed after all others
   };
 
-  const handleStageClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!selectedFormationId || !stageRef.current) return;
-    
-    // Check if clicking on a dancer circle
-    const target = e.target as HTMLElement;
-    if (target.closest('.dancer-circle')) return;
-    
-    const rect = stageRef.current.getBoundingClientRect();
-    const x = Math.max(0, Math.min(safeStageWidth, e.clientX - rect.left));
-    const y = Math.max(0, Math.min(safeStageHeight, e.clientY - rect.top));
-    
+  const addDancerAtPosition = (x: number, y: number) => {
+    if (!selectedFormationId) return;
+
     pushUndoSnapshot();
 
-    // Create new dancer
     const newDancer: Dancer = {
       id: `dancer-${Date.now()}`,
       name: `${dancers.length + 1}`,
@@ -518,8 +540,8 @@ export default function App() {
     };
     
     setDancers([...dancers, newDancer]);
+    setSelectedDancerIds(new Set([newDancer.id]));
     
-    // Add dancer to current formation
     setFormations(formations.map(f => {
       if (f.id === selectedFormationId) {
         return {
@@ -531,39 +553,111 @@ export default function App() {
     }));
   };
 
-  const handleDancerClick = (e: React.MouseEvent, dancerId: string) => {
-    e.stopPropagation();
-    const newSelected = new Set(selectedDancerIds);
-    if (newSelected.has(dancerId)) {
-      newSelected.delete(dancerId);
-    } else {
-      newSelected.add(dancerId);
-    }
-    setSelectedDancerIds(newSelected);
+  const handleStageMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!selectedFormationId) return;
+
+    const target = e.target as HTMLElement;
+    if (target.closest('.dancer-circle')) return;
+
+    const coords = getStageCoordinates(e.clientX, e.clientY);
+    if (!coords) return;
+
+    setSelectionBox({
+      startX: coords.x,
+      startY: coords.y,
+      currentX: coords.x,
+      currentY: coords.y,
+      additive: e.shiftKey
+    });
   };
 
-  const handleDancerDragStart = (e: React.MouseEvent, dancerId: string, currentX: number, currentY: number) => {
+  const handleDancerDragStart = (e: React.MouseEvent, dancerId: string) => {
     e.stopPropagation();
-    const offsetX = e.clientX - (stageRef.current?.getBoundingClientRect().left || 0) - currentX;
-    const offsetY = e.clientY - (stageRef.current?.getBoundingClientRect().top || 0) - currentY;
-    pushUndoSnapshot();
-    setDraggedDancer({ dancerId, offsetX, offsetY });
+
+    if (!selectedFormation) return;
+
+    if (e.shiftKey) {
+      setSelectedDancerIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(dancerId)) {
+          next.delete(dancerId);
+        } else {
+          next.add(dancerId);
+        }
+        return next;
+      });
+      return;
+    }
+
+    const coords = getStageCoordinates(e.clientX, e.clientY);
+    if (!coords) return;
+
+    const selectedBeforeMouseDown = new Set(selectedDancerIds);
+    const clickedWasInSelection = selectedBeforeMouseDown.has(dancerId);
+    const shouldPreserveMultiSelectionOnClick = clickedWasInSelection && selectedBeforeMouseDown.size > 1;
+    const dragIds = shouldPreserveMultiSelectionOnClick ? Array.from(selectedBeforeMouseDown) : [dancerId];
+
+    if (!shouldPreserveMultiSelectionOnClick) {
+      setSelectedDancerIds(new Set([dancerId]));
+    }
+
+    const formationPositions = new Map(selectedFormation.dancers.map((dancerPos) => [dancerPos.dancerId, dancerPos]));
+    const initialPositions = dragIds.reduce<Record<string, { x: number; y: number }>>((acc, id) => {
+      const dancerPos = formationPositions.get(id);
+      if (dancerPos) {
+        acc[id] = { x: dancerPos.x, y: dancerPos.y };
+      }
+      return acc;
+    }, {});
+    const anchorPosition = initialPositions[dancerId];
+    if (!anchorPosition) return;
+
+    dragMovedRef.current = false;
+    dragUndoPushedRef.current = false;
+    setDraggedDancer({
+      dancerIds: dragIds,
+      anchorId: dancerId,
+      offsetX: coords.x - anchorPosition.x,
+      offsetY: coords.y - anchorPosition.y,
+      initialPositions,
+      preserveMultiSelectionOnClick: shouldPreserveMultiSelectionOnClick
+    });
   };
 
   const handleDancerDragMove = (e: MouseEvent) => {
     if (!draggedDancer || !stageRef.current || !selectedFormationId) return;
     
-    const rect = stageRef.current.getBoundingClientRect();
-    const x = Math.max(0, Math.min(safeStageWidth, e.clientX - rect.left - draggedDancer.offsetX));
-    const y = Math.max(0, Math.min(safeStageHeight, e.clientY - rect.top - draggedDancer.offsetY));
+    const coords = getStageCoordinates(e.clientX, e.clientY);
+    if (!coords) return;
+    const anchorStart = draggedDancer.initialPositions[draggedDancer.anchorId];
+    if (!anchorStart) return;
+
+    const rawDeltaX = coords.x - draggedDancer.offsetX - anchorStart.x;
+    const rawDeltaY = coords.y - draggedDancer.offsetY - anchorStart.y;
+    const positions = Object.values(draggedDancer.initialPositions);
+    const minX = Math.min(...positions.map((pos) => pos.x));
+    const maxX = Math.max(...positions.map((pos) => pos.x));
+    const minY = Math.min(...positions.map((pos) => pos.y));
+    const maxY = Math.max(...positions.map((pos) => pos.y));
+    const deltaX = Math.max(-minX, Math.min(safeStageWidth - maxX, rawDeltaX));
+    const deltaY = Math.max(-minY, Math.min(safeStageHeight - maxY, rawDeltaY));
+
+    if (Math.abs(deltaX) > STAGE_DRAG_THRESHOLD || Math.abs(deltaY) > STAGE_DRAG_THRESHOLD) {
+      dragMovedRef.current = true;
+    }
+    if (dragMovedRef.current && !dragUndoPushedRef.current) {
+      pushUndoSnapshot();
+      dragUndoPushedRef.current = true;
+    }
     
     setFormations(formations.map(f => {
       if (f.id === selectedFormationId) {
         return {
           ...f,
-          dancers: f.dancers.map(d => 
-            d.dancerId === draggedDancer.dancerId ? { ...d, x, y } : d
-          )
+          dancers: f.dancers.map(d => {
+            const initial = draggedDancer.initialPositions[d.dancerId];
+            return initial ? { ...d, x: initial.x + deltaX, y: initial.y + deltaY } : d;
+          })
         };
       }
       return f;
@@ -571,6 +665,12 @@ export default function App() {
   };
 
   const handleDancerDragEnd = () => {
+    if (draggedDancer && !dragMovedRef.current && draggedDancer.preserveMultiSelectionOnClick) {
+      setSelectedDancerIds(new Set([draggedDancer.anchorId]));
+    }
+
+    dragMovedRef.current = false;
+    dragUndoPushedRef.current = false;
     setDraggedDancer(null);
   };
 
@@ -592,10 +692,12 @@ export default function App() {
   };
 
   const handleDancerColorChange = (dancerId: string, newColor: string) => {
-    const dancer = dancers.find((d) => d.id === dancerId);
-    if (!dancer || dancer.color === newColor) return;
+    const targetIds = selectedDancerIds.has(dancerId) ? selectedDancerIds : new Set([dancerId]);
+    const dancersToUpdate = dancers.filter((d) => targetIds.has(d.id));
+    if (dancersToUpdate.length === 0 || dancersToUpdate.every((d) => d.color === newColor)) return;
+
     pushUndoSnapshot();
-    setDancers(dancers.map((d) => (d.id === dancerId ? { ...d, color: newColor } : d)));
+    setDancers(dancers.map((d) => (targetIds.has(d.id) ? { ...d, color: newColor } : d)));
   };
 
   const handleDancerClickInDropdown = (dancerId: string) => {
@@ -771,6 +873,52 @@ export default function App() {
       setPreviousFormationId(selectedFormationId);
       setSelectedFormationId(id);
     }
+  };
+
+  const handleSelectionBoxMove = (e: MouseEvent) => {
+    setSelectionBox((current) => {
+      if (!current) return current;
+
+      const coords = getStageCoordinates(e.clientX, e.clientY);
+      if (!coords) return current;
+
+      return {
+        ...current,
+        currentX: coords.x,
+        currentY: coords.y
+      };
+    });
+  };
+
+  const handleSelectionBoxEnd = () => {
+    if (!selectionBox || !selectedFormation) return;
+
+    const left = Math.min(selectionBox.startX, selectionBox.currentX);
+    const right = Math.max(selectionBox.startX, selectionBox.currentX);
+    const top = Math.min(selectionBox.startY, selectionBox.currentY);
+    const bottom = Math.max(selectionBox.startY, selectionBox.currentY);
+    const isDragSelection = Math.abs(selectionBox.currentX - selectionBox.startX) > STAGE_DRAG_THRESHOLD
+      || Math.abs(selectionBox.currentY - selectionBox.startY) > STAGE_DRAG_THRESHOLD;
+
+    if (!isDragSelection) {
+      addDancerAtPosition(selectionBox.startX, selectionBox.startY);
+      setSelectionBox(null);
+      return;
+    }
+
+    const idsInBox = selectedFormation.dancers
+      .filter((dancerPos) => (
+        dancerPos.x >= left
+        && dancerPos.x <= right
+        && dancerPos.y >= top
+        && dancerPos.y <= bottom
+      ))
+      .map((dancerPos) => dancerPos.dancerId);
+
+    setSelectedDancerIds((prev) => (
+      selectionBox.additive ? new Set([...prev, ...idsInBox]) : new Set(idsInBox)
+    ));
+    setSelectionBox(null);
   };
 
   const handleFormationDoubleClick = (id: string) => {
@@ -1466,6 +1614,35 @@ export default function App() {
     }
   }, [draggedDancer, selectedFormationId, formations]);
 
+  useEffect(() => {
+    if (selectionBox) {
+      window.addEventListener('mousemove', handleSelectionBoxMove);
+      window.addEventListener('mouseup', handleSelectionBoxEnd);
+      return () => {
+        window.removeEventListener('mousemove', handleSelectionBoxMove);
+        window.removeEventListener('mouseup', handleSelectionBoxEnd);
+      };
+    }
+  }, [selectionBox, selectedFormation]);
+
+  useEffect(() => {
+    if (!selectedFormation) {
+      if (selectedDancerIds.size > 0) {
+        setSelectedDancerIds(new Set());
+      }
+      return;
+    }
+
+    const formationDancerIds = new Set(selectedFormation.dancers.map((dancerPos) => dancerPos.dancerId));
+    setSelectedDancerIds((prev) => {
+      const next = new Set(Array.from(prev).filter((id) => formationDancerIds.has(id)));
+      if (next.size === prev.size && Array.from(next).every((id) => prev.has(id))) {
+        return prev;
+      }
+      return next;
+    });
+  }, [selectedFormation]);
+
   // Close people dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -1726,7 +1903,12 @@ export default function App() {
                     <div className="px-3 py-2 text-[#666] text-[13px]">No dancers yet</div>
                   ) : (
                     dancers.map(dancer => (
-                      <div key={dancer.id} className="flex items-center gap-2 px-2 py-1.5 hover:bg-[#333] rounded">
+                      <div
+                        key={dancer.id}
+                        className={`flex items-center gap-2 px-2 py-1.5 rounded ${
+                          selectedDancerIds.has(dancer.id) ? 'bg-[#3a3550] ring-1 ring-[#8b72be]' : 'hover:bg-[#333]'
+                        }`}
+                      >
                         <label className="relative w-5 h-5 rounded-full border border-[#555] overflow-hidden cursor-pointer">
                           <input
                             type="color"
@@ -1884,11 +2066,11 @@ export default function App() {
 
             {/* Stage with Notes */}
             <div className="flex gap-6 items-start">
-              <div 
+              <div
                 ref={stageRef}
                 className="bg-[#28292a] rounded-[16px] border-[3px] border-[#8b72be] relative overflow-hidden cursor-crosshair" 
                 style={{ width: `${safeStageWidth}px`, height: `${safeStageHeight}px` }}
-                onClick={handleStageClick}
+                onMouseDown={handleStageMouseDown}
               >
                 {/* Vertical gridlines */}
                 {Array.from({ length: stageConfig.verticalGridLines }, (_, idx) => idx + 1).map((line) => (
@@ -1931,8 +2113,7 @@ export default function App() {
                           opacity: animation.type === 'exit' ? 0 : 1,
                           backgroundColor: dancer.color
                         }}
-                        onClick={(e) => handleDancerClick(e, dancer.id)}
-                        onMouseDown={(e) => handleDancerDragStart(e, dancer.id, dancerPos.x, dancerPos.y)}
+                        onMouseDown={(e) => handleDancerDragStart(e, dancer.id)}
                       >
                         {getDancerInitials(dancer)}
                       </div>
@@ -1951,13 +2132,24 @@ export default function App() {
                         transform: 'translate(-50%, -50%)',
                         backgroundColor: dancer.color
                       }}
-                      onClick={(e) => handleDancerClick(e, dancer.id)}
-                      onMouseDown={(e) => handleDancerDragStart(e, dancer.id, dancerPos.x, dancerPos.y)}
+                      onMouseDown={(e) => handleDancerDragStart(e, dancer.id)}
                     >
                       {getDancerInitials(dancer)}
                     </div>
                   );
                 })}
+
+                {selectionBox && (
+                  <div
+                    className="absolute border border-dashed border-white/80 bg-white/10 pointer-events-none"
+                    style={{
+                      left: `${Math.min(selectionBox.startX, selectionBox.currentX)}px`,
+                      top: `${Math.min(selectionBox.startY, selectionBox.currentY)}px`,
+                      width: `${Math.abs(selectionBox.currentX - selectionBox.startX)}px`,
+                      height: `${Math.abs(selectionBox.currentY - selectionBox.startY)}px`
+                    }}
+                  />
+                )}
                 
                 {/* Render entering dancers during animation */}
                 {isAnimating && dancerAnimations.filter(a => a.type === 'enter').map(animation => {
