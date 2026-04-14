@@ -40,6 +40,14 @@ interface AppSnapshot {
   dancers: Dancer[];
   selectedFormationId: string | null;
   previousFormationId: string | null;
+  stageConfig: StageConfig;
+}
+
+interface StageConfig {
+  width: number;
+  height: number;
+  verticalGridLines: number;
+  horizontalGridLines: number;
 }
 
 // Home Screen Component
@@ -220,6 +228,20 @@ const DANCER_COLOR_PALETTE = [
   '#eab308'
 ];
 
+const DEFAULT_STAGE_CONFIG: StageConfig = {
+  width: 800,
+  height: 500,
+  verticalGridLines: 5,
+  horizontalGridLines: 3
+};
+
+const STAGE_MIN_WIDTH = 320;
+const STAGE_MAX_WIDTH = 1600;
+const STAGE_MIN_HEIGHT = 240;
+const STAGE_MAX_HEIGHT = 1000;
+const GRID_MIN_LINES = 1;
+const GRID_MAX_LINES = 16;
+
 export default function App() {
   const [showHomeScreen, setShowHomeScreen] = useState(true);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
@@ -241,6 +263,10 @@ export default function App() {
   
   const [projectTitle, setProjectTitle] = useState('Hip Hop Piece Formations');
   const [editingProjectTitle, setEditingProjectTitle] = useState(false);
+  const [showSettingsDialog, setShowSettingsDialog] = useState(false);
+  const [stageConfig, setStageConfig] = useState<StageConfig>(DEFAULT_STAGE_CONFIG);
+  const [settingsDraft, setSettingsDraft] = useState<StageConfig>(DEFAULT_STAGE_CONFIG);
+  const [showHelpDialog, setShowHelpDialog] = useState(false);
   
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; formationId: string } | null>(null);
   const [formationDeleteDialog, setFormationDeleteDialog] = useState<{ formationId: string; formationName: string } | null>(null);
@@ -284,6 +310,36 @@ export default function App() {
 
   const selectedFormation = formations.find(f => f.id === selectedFormationId);
 
+  const clampStageWidth = (value: number) => Math.max(STAGE_MIN_WIDTH, Math.min(STAGE_MAX_WIDTH, Math.round(value)));
+  const clampStageHeight = (value: number) => Math.max(STAGE_MIN_HEIGHT, Math.min(STAGE_MAX_HEIGHT, Math.round(value)));
+  const clampGridLines = (value: number) => Math.max(GRID_MIN_LINES, Math.min(GRID_MAX_LINES, Math.round(value)));
+
+  const safeStageWidth = Math.max(1, stageConfig.width);
+  const safeStageHeight = Math.max(1, stageConfig.height);
+
+  const gcd = (a: number, b: number): number => {
+    let x = Math.abs(Math.round(a));
+    let y = Math.abs(Math.round(b));
+    while (y !== 0) {
+      const tmp = y;
+      y = x % y;
+      x = tmp;
+    }
+    return x || 1;
+  };
+
+  const stageRatioLabel = (() => {
+    const divisor = gcd(safeStageWidth, safeStageHeight);
+    return `${Math.round(safeStageWidth / divisor)}:${Math.round(safeStageHeight / divisor)}`;
+  })();
+
+  const draftStageWidth = Math.max(1, settingsDraft.width || stageConfig.width);
+  const draftStageHeight = Math.max(1, settingsDraft.height || stageConfig.height);
+  const draftRatioLabel = (() => {
+    const divisor = gcd(draftStageWidth, draftStageHeight);
+    return `${Math.round(draftStageWidth / divisor)}:${Math.round(draftStageHeight / divisor)}`;
+  })();
+
   const cloneFormations = (source: Formation[]) => source.map((formation) => ({
     ...formation,
     dancers: formation.dancers.map((dancerPos) => ({ ...dancerPos }))
@@ -296,7 +352,8 @@ export default function App() {
       formations: cloneFormations(formations),
       dancers: cloneDancers(dancers),
       selectedFormationId,
-      previousFormationId
+      previousFormationId,
+      stageConfig: { ...stageConfig }
     };
     undoStackRef.current.push(snapshot);
     if (undoStackRef.current.length > 100) {
@@ -314,10 +371,77 @@ export default function App() {
     setDancers(snapshot.dancers);
     setSelectedFormationId(snapshot.selectedFormationId);
     setPreviousFormationId(snapshot.previousFormationId);
+    setStageConfig(snapshot.stageConfig);
+    setSettingsDraft(snapshot.stageConfig);
     setDancerAnimations([]);
     setIsAnimating(false);
     setUndoDepth(undoStackRef.current.length);
     setRecordStatus('Undid last change.');
+  };
+
+  const openSettingsDialog = () => {
+    setSettingsDraft(stageConfig);
+    setShowSettingsDialog(true);
+  };
+
+  const applyRatioPresetToDraft = (ratioWidth: number, ratioHeight: number) => {
+    setSettingsDraft((prev) => {
+      const nextHeight = clampStageHeight((prev.width / ratioWidth) * ratioHeight);
+      return { ...prev, height: nextHeight };
+    });
+  };
+
+  const applyStageSettings = () => {
+    if (isRecording) {
+      setRecordStatus('Stop recording before changing stage settings.');
+      return;
+    }
+    if (isPlaying) {
+      stopPlayback();
+    }
+
+    const normalized: StageConfig = {
+      width: clampStageWidth(settingsDraft.width || stageConfig.width),
+      height: clampStageHeight(settingsDraft.height || stageConfig.height),
+      verticalGridLines: clampGridLines(settingsDraft.verticalGridLines || stageConfig.verticalGridLines),
+      horizontalGridLines: clampGridLines(settingsDraft.horizontalGridLines || stageConfig.horizontalGridLines)
+    };
+
+    const widthChanged = normalized.width !== stageConfig.width;
+    const heightChanged = normalized.height !== stageConfig.height;
+    const needsPositionScale = widthChanged || heightChanged;
+    const gridChanged =
+      normalized.verticalGridLines !== stageConfig.verticalGridLines ||
+      normalized.horizontalGridLines !== stageConfig.horizontalGridLines;
+
+    if (!needsPositionScale && !gridChanged) {
+      setShowSettingsDialog(false);
+      return;
+    }
+
+    pushUndoSnapshot();
+
+    if (needsPositionScale) {
+      const prevWidth = Math.max(1, stageConfig.width);
+      const prevHeight = Math.max(1, stageConfig.height);
+      const nextWidth = normalized.width;
+      const nextHeight = normalized.height;
+
+      setFormations((prevFormations) => prevFormations.map((formation) => ({
+        ...formation,
+        dancers: formation.dancers.map((pos) => ({
+          ...pos,
+          x: Math.max(0, Math.min(nextWidth, (pos.x / prevWidth) * nextWidth)),
+          y: Math.max(0, Math.min(nextHeight, (pos.y / prevHeight) * nextHeight))
+        }))
+      })));
+      setDancerAnimations([]);
+      setIsAnimating(false);
+    }
+
+    setStageConfig(normalized);
+    setShowSettingsDialog(false);
+    setRecordStatus(`Stage set to ${normalized.width}x${normalized.height} (${Math.round(normalized.width / normalized.height * 100) / 100}:1), grid ${normalized.verticalGridLines}x${normalized.horizontalGridLines}.`);
   };
 
   // Timeline duration: use audio duration if available, else derive from formations or default
@@ -380,8 +504,8 @@ export default function App() {
     if (target.closest('.dancer-circle')) return;
     
     const rect = stageRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = Math.max(0, Math.min(safeStageWidth, e.clientX - rect.left));
+    const y = Math.max(0, Math.min(safeStageHeight, e.clientY - rect.top));
     
     pushUndoSnapshot();
 
@@ -430,8 +554,8 @@ export default function App() {
     if (!draggedDancer || !stageRef.current || !selectedFormationId) return;
     
     const rect = stageRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left - draggedDancer.offsetX;
-    const y = e.clientY - rect.top - draggedDancer.offsetY;
+    const x = Math.max(0, Math.min(safeStageWidth, e.clientX - rect.left - draggedDancer.offsetX));
+    const y = Math.max(0, Math.min(safeStageHeight, e.clientY - rect.top - draggedDancer.offsetY));
     
     setFormations(formations.map(f => {
       if (f.id === selectedFormationId) {
@@ -483,8 +607,8 @@ export default function App() {
     if (!dancerExists) {
       pushUndoSnapshot();
       // Add dancer to center of stage
-      const centerX = 400;
-      const centerY = 250;
+      const centerX = safeStageWidth / 2;
+      const centerY = safeStageHeight / 2;
       
       setFormations(formations.map(f => {
         if (f.id === selectedFormationId) {
@@ -531,9 +655,9 @@ export default function App() {
   const getNearestEdge = (x: number, y: number) => {
     const distances = {
       left: x,
-      right: 800 - x,
+      right: safeStageWidth - x,
       top: y,
-      bottom: 500 - y
+      bottom: safeStageHeight - y
     };
     return Object.entries(distances).reduce((a, b) => 
       distances[a[0] as keyof typeof distances] < distances[b[0] as keyof typeof distances] ? a : b
@@ -542,21 +666,23 @@ export default function App() {
 
   // Get exit position based on nearest edge
   const getExitPosition = (x: number, y: number, edge: 'left' | 'right' | 'top' | 'bottom') => {
+    const offstagePadding = Math.max(40, Math.round(Math.min(safeStageWidth, safeStageHeight) * 0.1));
     switch (edge) {
-      case 'left': return { x: -50, y };
-      case 'right': return { x: 850, y };
-      case 'top': return { x, y: -50 };
-      case 'bottom': return { x, y: 550 };
+      case 'left': return { x: -offstagePadding, y };
+      case 'right': return { x: safeStageWidth + offstagePadding, y };
+      case 'top': return { x, y: -offstagePadding };
+      case 'bottom': return { x, y: safeStageHeight + offstagePadding };
     }
   };
 
   // Get enter position based on nearest edge to destination
   const getEnterPosition = (x: number, y: number, edge: 'left' | 'right' | 'top' | 'bottom') => {
+    const offstagePadding = Math.max(40, Math.round(Math.min(safeStageWidth, safeStageHeight) * 0.1));
     switch (edge) {
-      case 'left': return { x: -50, y };
-      case 'right': return { x: 850, y };
-      case 'top': return { x, y: -50 };
-      case 'bottom': return { x, y: 550 };
+      case 'left': return { x: -offstagePadding, y };
+      case 'right': return { x: safeStageWidth + offstagePadding, y };
+      case 'top': return { x, y: -offstagePadding };
+      case 'bottom': return { x, y: safeStageHeight + offstagePadding };
     }
   };
 
@@ -822,8 +948,8 @@ export default function App() {
     time: number,
     timeline = getFormationTimelineForDuration(timelineDuration)
   ) => {
-    const width = 800;
-    const height = 500;
+    const width = safeStageWidth;
+    const height = safeStageHeight;
 
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#28292a';
@@ -835,15 +961,15 @@ export default function App() {
 
     ctx.strokeStyle = '#3a3a3a';
     ctx.lineWidth = 1;
-    for (let i = 1; i <= 5; i += 1) {
-      const x = (i / 6) * width;
+    for (let i = 1; i <= stageConfig.verticalGridLines; i += 1) {
+      const x = (i / (stageConfig.verticalGridLines + 1)) * width;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, height);
       ctx.stroke();
     }
-    for (let i = 1; i <= 3; i += 1) {
-      const y = (i / 4) * height;
+    for (let i = 1; i <= stageConfig.horizontalGridLines; i += 1) {
+      const y = (i / (stageConfig.horizontalGridLines + 1)) * height;
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(width, y);
@@ -958,8 +1084,8 @@ export default function App() {
       setRecordStatus('Recording canvas is not ready yet. Try again.');
       return;
     }
-    canvas.width = 800;
-    canvas.height = 500;
+    canvas.width = safeStageWidth;
+    canvas.height = safeStageHeight;
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       setRecordStatus('Could not initialize recording canvas.');
@@ -1388,6 +1514,19 @@ export default function App() {
         target.isContentEditable
       );
 
+      if (e.key === 'Escape') {
+        if (showSettingsDialog) {
+          setShowSettingsDialog(false);
+          return;
+        }
+        if (showHelpDialog) {
+          setShowHelpDialog(false);
+          return;
+        }
+      }
+
+      if (showHelpDialog || showSettingsDialog) return;
+
       if (!isTypingTarget && e.key === 'Delete' && selectedFormationId && !formationDeleteDialog) {
         e.preventDefault();
         openFormationDeleteDialog(selectedFormationId);
@@ -1403,7 +1542,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedFormationId, formationDeleteDialog]);
+  }, [selectedFormationId, formationDeleteDialog, showHelpDialog, showSettingsDialog]);
 
   // Keep playheadTimeRef in sync for drag handlers
   useEffect(() => { playheadTimeRef.current = playheadTime; }, [playheadTime]);
@@ -1469,9 +1608,22 @@ export default function App() {
             {projectTitle}
           </h1>
         )}
-        <button className="absolute right-6 text-white hover:opacity-80 transition-opacity">
-          <Settings size={24} />
-        </button>
+        <div className="absolute right-6 flex items-center gap-2">
+          <button
+            className="text-white hover:opacity-80 transition-opacity bg-[#6f58a0] border border-white/25 rounded-[9px] p-2"
+            onClick={openSettingsDialog}
+            title="Open stage settings"
+          >
+            <Settings size={16} />
+          </button>
+          <button
+            className="text-white hover:opacity-80 transition-opacity bg-[#6f58a0] border border-white/25 rounded-[9px] px-3 py-1.5 text-[13px] font-semibold tracking-wide"
+            onClick={() => setShowHelpDialog(true)}
+            title="Open help"
+          >
+            Help
+          </button>
+        </div>
       </div>
 
       {/* Secondary Bar with Controls */}
@@ -1693,8 +1845,8 @@ export default function App() {
                         key={dancerPos.dancerId}
                         className="absolute w-[18px] h-[18px] rounded-full flex items-center justify-center text-white text-[8px] font-medium"
                         style={{
-                          left: `${(dancerPos.x / 800) * 100}%`,
-                          top: `${(dancerPos.y / 500) * 100}%`,
+                          left: `${(dancerPos.x / safeStageWidth) * 100}%`,
+                          top: `${(dancerPos.y / safeStageHeight) * 100}%`,
                           transform: 'translate(-50%, -50%)',
                           backgroundColor: dancer.color
                         }}
@@ -1735,23 +1887,23 @@ export default function App() {
               <div 
                 ref={stageRef}
                 className="bg-[#28292a] rounded-[16px] border-[3px] border-[#8b72be] relative overflow-hidden cursor-crosshair" 
-                style={{ width: '800px', height: '500px' }}
+                style={{ width: `${safeStageWidth}px`, height: `${safeStageHeight}px` }}
                 onClick={handleStageClick}
               >
                 {/* Vertical gridlines */}
-                {[1, 2, 3, 4, 5].map((line) => (
+                {Array.from({ length: stageConfig.verticalGridLines }, (_, idx) => idx + 1).map((line) => (
                   <div
                     key={`v-${line}`}
                     className="absolute top-0 bottom-0 w-px bg-[#3a3a3a] pointer-events-none"
-                    style={{ left: `${(line / 6) * 100}%` }}
+                    style={{ left: `${(line / (stageConfig.verticalGridLines + 1)) * 100}%` }}
                   />
                 ))}
                 {/* Horizontal gridlines */}
-                {[1, 2, 3].map((line) => (
+                {Array.from({ length: stageConfig.horizontalGridLines }, (_, idx) => idx + 1).map((line) => (
                   <div
                     key={`h-${line}`}
                     className="absolute left-0 right-0 h-px bg-[#3a3a3a] pointer-events-none"
-                    style={{ top: `${(line / 4) * 100}%` }}
+                    style={{ top: `${(line / (stageConfig.horizontalGridLines + 1)) * 100}%` }}
                   />
                 ))}
                 
@@ -1832,7 +1984,8 @@ export default function App() {
 
               {/* Notes Box */}
               <div 
-                className="bg-[#28292a] rounded-[16px] w-[250px] h-[500px] p-4 cursor-text"
+                className="bg-[#28292a] rounded-[16px] w-[250px] p-4 cursor-text"
+                style={{ height: `${safeStageHeight}px` }}
                 onDoubleClick={handleNotesDoubleClick}
               >
                 <h3 className="text-[#b4b1b1] text-[20px] font-bold tracking-[0.52px] mb-4">Notes</h3>
@@ -1984,6 +2137,252 @@ export default function App() {
         </div>
       </div>
 
+      {/* Settings Dialog */}
+      {showSettingsDialog && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowSettingsDialog(false)}>
+          <div
+            className="bg-[#252525] border border-[#3a3a3a] rounded-[12px] w-[min(640px,calc(100%-32px))] max-h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[#3a3a3a]">
+              <h3 className="text-white text-[18px] font-semibold">Stage Settings</h3>
+              <button
+                onClick={() => setShowSettingsDialog(false)}
+                className="text-[#888] hover:text-white transition-colors"
+                title="Close settings"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="px-6 py-5 overflow-y-auto text-[14px] text-[#d0d0d0] space-y-5">
+              <section>
+                <h4 className="text-white text-[15px] font-semibold mb-3">Stage Dimensions</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[#aaa] text-[12px] uppercase tracking-wide">Width (px)</span>
+                    <input
+                      type="number"
+                      min={STAGE_MIN_WIDTH}
+                      max={STAGE_MAX_WIDTH}
+                      value={Number.isFinite(settingsDraft.width) ? settingsDraft.width : stageConfig.width}
+                      onChange={(e) => {
+                        const next = Number(e.target.value);
+                        setSettingsDraft((prev) => ({ ...prev, width: Number.isFinite(next) ? next : stageConfig.width }));
+                      }}
+                      className="bg-[#1d1d1d] border border-[#3a3a3a] rounded-[8px] px-3 py-2 text-white outline-none focus:border-[#8b72be]"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[#aaa] text-[12px] uppercase tracking-wide">Height (px)</span>
+                    <input
+                      type="number"
+                      min={STAGE_MIN_HEIGHT}
+                      max={STAGE_MAX_HEIGHT}
+                      value={Number.isFinite(settingsDraft.height) ? settingsDraft.height : stageConfig.height}
+                      onChange={(e) => {
+                        const next = Number(e.target.value);
+                        setSettingsDraft((prev) => ({ ...prev, height: Number.isFinite(next) ? next : stageConfig.height }));
+                      }}
+                      className="bg-[#1d1d1d] border border-[#3a3a3a] rounded-[8px] px-3 py-2 text-white outline-none focus:border-[#8b72be]"
+                    />
+                  </label>
+                </div>
+                <p className="text-[#999] text-[12px] mt-2">
+                  Allowed range: {STAGE_MIN_WIDTH}-{STAGE_MAX_WIDTH}px wide, {STAGE_MIN_HEIGHT}-{STAGE_MAX_HEIGHT}px high.
+                </p>
+              </section>
+
+              <section>
+                <h4 className="text-white text-[15px] font-semibold mb-3">Aspect Ratio</h4>
+                <p className="text-[#aaa] text-[13px] mb-3">
+                  Current: <span className="text-white">{stageRatioLabel}</span> ({Math.round((safeStageWidth / safeStageHeight) * 100) / 100}:1)
+                  {' '}| Draft: <span className="text-white">{draftRatioLabel}</span> ({Math.round((draftStageWidth / draftStageHeight) * 100) / 100}:1)
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    className="px-3 py-1.5 rounded-[8px] bg-[#1d1d1d] border border-[#3a3a3a] hover:bg-[#333] text-white transition-colors"
+                    onClick={() => applyRatioPresetToDraft(16, 9)}
+                  >
+                    16:9
+                  </button>
+                  <button
+                    className="px-3 py-1.5 rounded-[8px] bg-[#1d1d1d] border border-[#3a3a3a] hover:bg-[#333] text-white transition-colors"
+                    onClick={() => applyRatioPresetToDraft(4, 3)}
+                  >
+                    4:3
+                  </button>
+                  <button
+                    className="px-3 py-1.5 rounded-[8px] bg-[#1d1d1d] border border-[#3a3a3a] hover:bg-[#333] text-white transition-colors"
+                    onClick={() => applyRatioPresetToDraft(8, 5)}
+                  >
+                    8:5
+                  </button>
+                  <button
+                    className="px-3 py-1.5 rounded-[8px] bg-[#1d1d1d] border border-[#3a3a3a] hover:bg-[#333] text-white transition-colors"
+                    onClick={() => applyRatioPresetToDraft(1, 1)}
+                  >
+                    1:1
+                  </button>
+                </div>
+                <p className="text-[#999] text-[12px] mt-2">Ratio presets keep your draft width and recalculate draft height.</p>
+              </section>
+
+              <section>
+                <h4 className="text-white text-[15px] font-semibold mb-3">Grid Lines</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[#aaa] text-[12px] uppercase tracking-wide">Vertical Lines</span>
+                    <input
+                      type="number"
+                      min={GRID_MIN_LINES}
+                      max={GRID_MAX_LINES}
+                      value={Number.isFinite(settingsDraft.verticalGridLines) ? settingsDraft.verticalGridLines : stageConfig.verticalGridLines}
+                      onChange={(e) => {
+                        const next = Number(e.target.value);
+                        setSettingsDraft((prev) => ({ ...prev, verticalGridLines: Number.isFinite(next) ? next : stageConfig.verticalGridLines }));
+                      }}
+                      className="bg-[#1d1d1d] border border-[#3a3a3a] rounded-[8px] px-3 py-2 text-white outline-none focus:border-[#8b72be]"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[#aaa] text-[12px] uppercase tracking-wide">Horizontal Lines</span>
+                    <input
+                      type="number"
+                      min={GRID_MIN_LINES}
+                      max={GRID_MAX_LINES}
+                      value={Number.isFinite(settingsDraft.horizontalGridLines) ? settingsDraft.horizontalGridLines : stageConfig.horizontalGridLines}
+                      onChange={(e) => {
+                        const next = Number(e.target.value);
+                        setSettingsDraft((prev) => ({ ...prev, horizontalGridLines: Number.isFinite(next) ? next : stageConfig.horizontalGridLines }));
+                      }}
+                      className="bg-[#1d1d1d] border border-[#3a3a3a] rounded-[8px] px-3 py-2 text-white outline-none focus:border-[#8b72be]"
+                    />
+                  </label>
+                </div>
+              </section>
+            </div>
+
+            <div className="px-6 py-4 border-t border-[#3a3a3a] flex justify-end gap-2">
+              <button
+                onClick={() => setShowSettingsDialog(false)}
+                className="bg-[#1d1d1d] hover:bg-[#333] text-[#aaa] px-4 py-2 rounded-[8px] text-[14px] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={applyStageSettings}
+                className="bg-[#8b72be] hover:bg-[#7b62ae] text-white px-4 py-2 rounded-[8px] text-[14px] transition-colors"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Help Dialog */}
+      {showHelpDialog && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowHelpDialog(false)}>
+          <div
+            className="bg-[#252525] border border-[#3a3a3a] rounded-[12px] w-[min(940px,calc(100%-32px))] max-h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[#3a3a3a]">
+              <h3 className="text-white text-[18px] font-semibold">Help & Quick Guide</h3>
+              <button
+                onClick={() => setShowHelpDialog(false)}
+                className="text-[#888] hover:text-white transition-colors"
+                title="Close help"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-6 py-5 overflow-y-auto text-[14px] text-[#d0d0d0] leading-relaxed space-y-5">
+              <section>
+                <h4 className="text-white text-[15px] font-semibold mb-2">1) Getting started</h4>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>Click <span className="text-white font-medium">open new project</span> on the home screen.</li>
+                  <li>Use the <span className="text-white font-medium">+ button on the formation track</span> to create formations.</li>
+                  <li>Click a formation block to select it before editing dancers, notes, or timing.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h4 className="text-white text-[15px] font-semibold mb-2">2) Working with formations</h4>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>Click a formation name to select it; double-click its name on the timeline to rename it.</li>
+                  <li>Adjust formation length using the <span className="text-white font-medium">length - / +</span> controls in the top bar.</li>
+                  <li>You can also drag a formation block&apos;s right edge in the timeline to resize its duration.</li>
+                  <li>Use the top-right <span className="text-white font-medium">Settings</span> button to change stage size, ratio, and grid lines.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h4 className="text-white text-[15px] font-semibold mb-2">3) Adding and editing dancers</h4>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>Click anywhere on the stage to add a new dancer to the selected formation.</li>
+                  <li>Drag a dancer circle on the stage to reposition it.</li>
+                  <li>Use the <span className="text-white font-medium">People</span> menu to change dancer names and colors.</li>
+                  <li>In the People menu, <span className="text-white font-medium">+</span> adds an existing dancer to the current formation.</li>
+                  <li>In the People menu, <span className="text-white font-medium">-</span> opens removal options (this formation or all formations).</li>
+                </ul>
+              </section>
+
+              <section>
+                <h4 className="text-white text-[15px] font-semibold mb-2">4) Playback and sync</h4>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>Press <span className="text-white font-medium">Play</span> to run through formations in timeline order.</li>
+                  <li>Drag the red playhead handle to scrub time manually.</li>
+                  <li>Audio playback syncs to the same playhead when a .wav file is loaded.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h4 className="text-white text-[15px] font-semibold mb-2">5) Audio upload</h4>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>Click the <span className="text-white font-medium">+</span> in the Audio track to upload audio.</li>
+                  <li>Supported upload format is <span className="text-white font-medium">.wav</span>.</li>
+                  <li>Use the small <span className="text-white font-medium">X</span> on the audio strip to remove uploaded audio.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h4 className="text-white text-[15px] font-semibold mb-2">6) Recording and download</h4>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>Press <span className="text-white font-medium">Record</span> to capture the stage animation and audio.</li>
+                  <li>If playback is running, recording starts from the live playhead; if not, it starts from time 0.</li>
+                  <li>When recording ends, the file downloads automatically (or opens share sheet when supported).</li>
+                  <li>MP4 is attempted first; if unsupported in the browser, the app exports WebM.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h4 className="text-white text-[15px] font-semibold mb-2">7) Delete, remove, and undo</h4>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>Right-click a formation block (or a formation card) and choose <span className="text-white font-medium">Delete Formation</span>.</li>
+                  <li>You can also select a formation and press the <span className="text-white font-medium">Delete</span> key.</li>
+                  <li>Use the top-left <span className="text-white font-medium">Undo</span> button (or Ctrl/Cmd + Z) to revert the last change.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h4 className="text-white text-[15px] font-semibold mb-2">8) Common troubleshooting</h4>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>If you cannot place dancers, make sure a formation is selected first.</li>
+                  <li>If playback looks stuck, check timeline lengths and move the playhead away from the end.</li>
+                  <li>If recording is unavailable, verify your browser supports MediaRecorder.</li>
+                  <li>If you don&apos;t see the saved recording, check your browser&apos;s Downloads folder and download permissions.</li>
+                </ul>
+              </section>
+            </div>
+            <div className="px-6 py-3 border-t border-[#3a3a3a] text-[#999] text-[12px]">
+              Press <span className="text-white">Esc</span> or click outside this panel to close.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Removal Dialog */}
       {removalDialog && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -2123,12 +2522,12 @@ export default function App() {
         className={`fixed right-3 bottom-3 z-50 rounded border border-[#3a3a3a] bg-[#111] overflow-hidden transition-opacity ${
           isRecording ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
-        style={{ width: '200px', height: '125px' }}
+        style={{ width: '220px', aspectRatio: `${safeStageWidth} / ${safeStageHeight}` }}
       >
         <canvas
           ref={recordingCanvasRef}
-          width={800}
-          height={500}
+          width={safeStageWidth}
+          height={safeStageHeight}
           className="w-full h-full"
         />
       </div>
