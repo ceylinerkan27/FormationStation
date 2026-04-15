@@ -11,6 +11,27 @@ interface DancerAnimation {
   type: 'move' | 'exit' | 'enter';
   exitDirection?: 'left' | 'right' | 'top' | 'bottom';
   enterDirection?: 'left' | 'right' | 'top' | 'bottom';
+  path?: DancerPath;
+}
+
+type PathType = 'straight' | 'quadratic' | 'cubic' | 'l-shape';
+
+interface PathPoint {
+  x: number;
+  y: number;
+}
+
+interface DancerPath {
+  type: PathType;
+  controlPoints: PathPoint[];
+}
+
+interface StoredDancerPath {
+  type: PathType;
+  controlPoints: Array<{
+    xRatio: number;
+    yRatio: number;
+  }>;
 }
 
 interface Dancer {
@@ -56,6 +77,11 @@ interface ReorderedFormationState {
   currentX: number;
 }
 
+interface DraggedPathHandleState {
+  dancerId: string;
+  controlIndex: number;
+}
+
 interface Formation {
   id: string;
   name: string;
@@ -64,6 +90,7 @@ interface Formation {
   transitionToNextSeconds?: number;
   notes: string;
   dancers: DancerPosition[];
+  transitionPaths?: Record<string, DancerPath>;
 }
 
 interface AppSnapshot {
@@ -100,6 +127,7 @@ interface LibraryFormationTemplate {
   transitionToNextSeconds?: number;
   dancerCount: number;
   dancers: LibraryFormationDancer[];
+  transitionPaths?: Record<string, StoredDancerPath>;
   updatedAt: number;
 }
 
@@ -303,6 +331,14 @@ const PROJECT_LIBRARY_STORAGE_KEY = 'formation-station-project-library-v1';
 const PROJECT_LIBRARY_MAX_PROJECTS = 30;
 const FORMATION_LIBRARY_DRAG_TYPE = 'application/x-formation-library-template';
 const PEOPLE_DANCER_DRAG_TYPE = 'application/x-formation-station-dancer';
+const PATH_HANDLE_HIT_RADIUS = 10;
+
+const PATH_TYPE_OPTIONS: Array<{ id: PathType; label: string; description: string }> = [
+  { id: 'straight', label: 'Straight Line', description: 'Direct line from current position to next position.' },
+  { id: 'quadratic', label: '3-Point Curve', description: 'One draggable control point bends the path.' },
+  { id: 'cubic', label: '4-Point Curve', description: 'Two draggable control points create a more complex curve.' },
+  { id: 'l-shape', label: 'L-Shape', description: 'A sharp corner path with one draggable elbow.' }
+];
 
 const createProjectId = () => `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -328,7 +364,7 @@ export default function App() {
   const [previousFormationId, setPreviousFormationId] = useState<string | null>(null);
   const [dancerAnimations, setDancerAnimations] = useState<DancerAnimation[]>([]);
   const [isAnimating, setIsAnimating] = useState(false);
-  const [animateDancerTransitions, setAnimateDancerTransitions] = useState(false);
+  const [manualTransitionProgress, setManualTransitionProgress] = useState(0);
   const [editingFormationId, setEditingFormationId] = useState<string | null>(null);
   const [editingNotes, setEditingNotes] = useState(false);
   const [resizedFormation, setResizedFormation] = useState<ResizedFormationState | null>(null);
@@ -337,6 +373,7 @@ export default function App() {
   const [dancers, setDancers] = useState<Dancer[]>([]);
   const [selectedDancerIds, setSelectedDancerIds] = useState<Set<string>>(new Set());
   const [draggedDancer, setDraggedDancer] = useState<DraggedDancerState | null>(null);
+  const [draggedPathHandle, setDraggedPathHandle] = useState<DraggedPathHandleState | null>(null);
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [showPeopleDropdown, setShowPeopleDropdown] = useState(false);
   const [draggedPeopleDancerId, setDraggedPeopleDancerId] = useState<string | null>(null);
@@ -376,6 +413,8 @@ export default function App() {
   const playStartWallRef = useRef(0);
   const playStartHeadRef = useRef(0);
   const animFrameRef = useRef(0);
+  const manualTransitionStartRef = useRef(0);
+  const manualTransitionDurationRef = useRef(0);
   const playSessionRef = useRef(0);
   const recordingFrameRef = useRef(0);
   const recordingIntervalRef = useRef<number | null>(null);
@@ -400,6 +439,7 @@ export default function App() {
   const formationReorderUndoPushedRef = useRef(false);
   const suppressFormationClickRef = useRef(false);
   const transitionClearTimeoutRef = useRef<number | null>(null);
+  const activePathPreviewDancerId = selectedDancerIds.size === 1 ? Array.from(selectedDancerIds)[0] : null;
 
   const selectedFormation = formations.find(f => f.id === selectedFormationId);
 
@@ -473,9 +513,140 @@ export default function App() {
     return `${Math.round(draftStageWidth / divisor)}:${Math.round(draftStageHeight / divisor)}`;
   })();
 
+  const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+
+  const getDefaultPathControlPoints = (type: PathType, start: PathPoint, end: PathPoint): PathPoint[] => {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const length = Math.hypot(dx, dy) || 1;
+    const normalX = -dy / length;
+    const normalY = dx / length;
+    const offset = Math.min(120, Math.max(40, length * 0.25));
+    const midpoint = { x: start.x + dx * 0.5, y: start.y + dy * 0.5 };
+
+    switch (type) {
+      case 'quadratic':
+        return [{
+          x: midpoint.x + normalX * offset,
+          y: midpoint.y + normalY * offset
+        }];
+      case 'cubic':
+        return [
+          {
+            x: start.x + dx / 3 + normalX * offset,
+            y: start.y + dy / 3 + normalY * offset
+          },
+          {
+            x: start.x + (dx * 2) / 3 + normalX * offset,
+            y: start.y + (dy * 2) / 3 + normalY * offset
+          }
+        ];
+      case 'l-shape':
+        return [{ x: end.x, y: start.y }];
+      case 'straight':
+      default:
+        return [];
+    }
+  };
+
+  const normalizePathForEndpoints = (path: DancerPath | undefined, start: PathPoint, end: PathPoint): DancerPath => {
+    const type = path?.type ?? 'straight';
+    const controlPoints = path?.controlPoints?.length
+      ? path.controlPoints.map((point) => ({
+          x: Math.max(0, Math.min(safeStageWidth, point.x)),
+          y: Math.max(0, Math.min(safeStageHeight, point.y))
+        }))
+      : getDefaultPathControlPoints(type, start, end);
+
+    return { type, controlPoints };
+  };
+
+  const getPointOnPath = (path: DancerPath | undefined, start: PathPoint, end: PathPoint, t: number): PathPoint => {
+    const clampedT = clamp01(t);
+    const normalized = normalizePathForEndpoints(path, start, end);
+
+    if (normalized.type === 'quadratic') {
+      const control = normalized.controlPoints[0] ?? getDefaultPathControlPoints('quadratic', start, end)[0];
+      const inv = 1 - clampedT;
+      return {
+        x: inv * inv * start.x + 2 * inv * clampedT * control.x + clampedT * clampedT * end.x,
+        y: inv * inv * start.y + 2 * inv * clampedT * control.y + clampedT * clampedT * end.y
+      };
+    }
+
+    if (normalized.type === 'cubic') {
+      const defaults = getDefaultPathControlPoints('cubic', start, end);
+      const control1 = normalized.controlPoints[0] ?? defaults[0];
+      const control2 = normalized.controlPoints[1] ?? defaults[1];
+      const inv = 1 - clampedT;
+      return {
+        x: inv * inv * inv * start.x
+          + 3 * inv * inv * clampedT * control1.x
+          + 3 * inv * clampedT * clampedT * control2.x
+          + clampedT * clampedT * clampedT * end.x,
+        y: inv * inv * inv * start.y
+          + 3 * inv * inv * clampedT * control1.y
+          + 3 * inv * clampedT * clampedT * control2.y
+          + clampedT * clampedT * clampedT * end.y
+      };
+    }
+
+    if (normalized.type === 'l-shape') {
+      const corner = normalized.controlPoints[0] ?? getDefaultPathControlPoints('l-shape', start, end)[0];
+      if (clampedT <= 0.5) {
+        const firstSegmentT = clampedT / 0.5;
+        return {
+          x: start.x + (corner.x - start.x) * firstSegmentT,
+          y: start.y + (corner.y - start.y) * firstSegmentT
+        };
+      }
+      const secondSegmentT = (clampedT - 0.5) / 0.5;
+      return {
+        x: corner.x + (end.x - corner.x) * secondSegmentT,
+        y: corner.y + (end.y - corner.y) * secondSegmentT
+      };
+    }
+
+    return {
+      x: start.x + (end.x - start.x) * clampedT,
+      y: start.y + (end.y - start.y) * clampedT
+    };
+  };
+
+  const getSvgPathDefinition = (path: DancerPath | undefined, start: PathPoint, end: PathPoint) => {
+    const normalized = normalizePathForEndpoints(path, start, end);
+    if (normalized.type === 'quadratic') {
+      const control = normalized.controlPoints[0];
+      return `M ${start.x} ${start.y} Q ${control.x} ${control.y} ${end.x} ${end.y}`;
+    }
+    if (normalized.type === 'cubic') {
+      const [control1, control2] = normalized.controlPoints;
+      return `M ${start.x} ${start.y} C ${control1.x} ${control1.y} ${control2.x} ${control2.y} ${end.x} ${end.y}`;
+    }
+    if (normalized.type === 'l-shape') {
+      const corner = normalized.controlPoints[0];
+      return `M ${start.x} ${start.y} L ${corner.x} ${corner.y} L ${end.x} ${end.y}`;
+    }
+    return `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
+  };
+
+  const cloneTransitionPaths = (paths?: Record<string, DancerPath>) => {
+    if (!paths) return undefined;
+    return Object.fromEntries(
+      Object.entries(paths).map(([dancerId, path]) => [
+        dancerId,
+        {
+          type: path.type,
+          controlPoints: path.controlPoints.map((point) => ({ ...point }))
+        }
+      ])
+    );
+  };
+
   const cloneFormations = (source: Formation[]) => source.map((formation) => ({
     ...formation,
-    dancers: formation.dancers.map((dancerPos) => ({ ...dancerPos }))
+    dancers: formation.dancers.map((dancerPos) => ({ ...dancerPos })),
+    transitionPaths: cloneTransitionPaths(formation.transitionPaths)
   }));
 
   const cloneDancers = (source: Dancer[]) => source.map((dancer) => ({ ...dancer }));
@@ -566,7 +737,21 @@ export default function App() {
           ...pos,
           x: Math.max(0, Math.min(nextWidth, (pos.x / prevWidth) * nextWidth)),
           y: Math.max(0, Math.min(nextHeight, (pos.y / prevHeight) * nextHeight))
-        }))
+        })),
+        transitionPaths: formation.transitionPaths
+          ? Object.fromEntries(
+              Object.entries(formation.transitionPaths).map(([dancerId, path]) => [
+                dancerId,
+                {
+                  ...path,
+                  controlPoints: path.controlPoints.map((point) => ({
+                    x: Math.max(0, Math.min(nextWidth, (point.x / prevWidth) * nextWidth)),
+                    y: Math.max(0, Math.min(nextHeight, (point.y / prevHeight) * nextHeight))
+                  }))
+                }
+              ])
+            )
+          : undefined
       })));
       setDancerAnimations([]);
       setIsAnimating(false);
@@ -659,6 +844,20 @@ export default function App() {
         x: d.xRatio * DEFAULT_STAGE_CONFIG.width,
         y: d.yRatio * DEFAULT_STAGE_CONFIG.height,
       })),
+      transitionPaths: template.transitionPaths
+        ? Object.fromEntries(
+            Object.entries(template.transitionPaths).map(([dancerId, path]) => [
+              dancerId,
+              {
+                type: path.type,
+                controlPoints: path.controlPoints.map((point) => ({
+                  x: point.xRatio * DEFAULT_STAGE_CONFIG.width,
+                  y: point.yRatio * DEFAULT_STAGE_CONFIG.height
+                }))
+              }
+            ])
+          )
+        : undefined
     }));
 
     setCurrentProjectId(record.projectId);
@@ -1059,6 +1258,11 @@ export default function App() {
       return;
     }
 
+    if (isPathEditMode) {
+      setSelectedDancerIds(new Set());
+      return;
+    }
+
     setSelectionBox({
       startX: coords.x,
       startY: coords.y,
@@ -1072,6 +1276,11 @@ export default function App() {
     e.stopPropagation();
 
     if (!selectedFormation) return;
+
+    if (isPathEditMode) {
+      setSelectedDancerIds(new Set([dancerId]));
+      return;
+    }
 
     if (e.shiftKey) {
       setSelectedDancerIds((prev) => {
@@ -1169,6 +1378,34 @@ export default function App() {
     dragMovedRef.current = false;
     dragUndoPushedRef.current = false;
     setDraggedDancer(null);
+  };
+
+  const handlePathHandleDragMove = (e: MouseEvent) => {
+    if (!draggedPathHandle || !selectedFormationId) return;
+    const coords = getStageCoordinates(e.clientX, e.clientY);
+    if (!coords) return;
+
+    setFormations((prevFormations) => prevFormations.map((formation) => {
+      if (formation.id !== selectedFormationId) return formation;
+      const existingPath = formation.transitionPaths?.[draggedPathHandle.dancerId];
+      if (!existingPath) return formation;
+      return {
+        ...formation,
+        transitionPaths: {
+          ...(formation.transitionPaths ?? {}),
+          [draggedPathHandle.dancerId]: {
+            ...existingPath,
+            controlPoints: existingPath.controlPoints.map((point, index) => (
+              index === draggedPathHandle.controlIndex ? coords : point
+            ))
+          }
+        }
+      };
+    }));
+  };
+
+  const handlePathHandleDragEnd = () => {
+    setDraggedPathHandle(null);
   };
 
   const getDancerInitials = (dancer: Dancer) => {
@@ -1278,6 +1515,32 @@ export default function App() {
     }
   };
 
+  const getNextFormationFor = (formationId: string | null) => {
+    if (!formationId) return null;
+    const currentIndex = formations.findIndex((formation) => formation.id === formationId);
+    if (currentIndex < 0 || currentIndex >= formations.length - 1) return null;
+    return formations[currentIndex + 1];
+  };
+
+  const getTransitionPathForDancer = (formation: Formation | undefined, dancerId: string, start: PathPoint, end: PathPoint) =>
+    normalizePathForEndpoints(formation?.transitionPaths?.[dancerId], start, end);
+
+  const updateTransitionPathForDancer = (formationId: string, dancerId: string, nextPath: DancerPath) => {
+    setFormations((prevFormations) => prevFormations.map((formation) => {
+      if (formation.id !== formationId) return formation;
+      return {
+        ...formation,
+        transitionPaths: {
+          ...(formation.transitionPaths ?? {}),
+          [dancerId]: {
+            type: nextPath.type,
+            controlPoints: nextPath.controlPoints.map((point) => ({ ...point }))
+          }
+        }
+      };
+    }));
+  };
+
   const handleFormationClick = (id: string) => {
     if (suppressFormationClickRef.current) {
       suppressFormationClickRef.current = false;
@@ -1340,7 +1603,13 @@ export default function App() {
               startY: dancerPos.y,
               endX: nextPos.x,
               endY: nextPos.y,
-              type: 'move'
+              type: 'move',
+              path: getTransitionPathForDancer(
+                currentFormation,
+                dancerPos.dancerId,
+                { x: dancerPos.x, y: dancerPos.y },
+                { x: nextPos.x, y: nextPos.y }
+              )
             });
           }
         } else {
@@ -1379,18 +1648,31 @@ export default function App() {
       // Start animation
       setDancerAnimations(animations);
       setIsAnimating(true);
-      setAnimateDancerTransitions(false);
+      setManualTransitionProgress(0);
       setPreviousFormationId(selectedFormationId);
       setSelectedFormationId(id);
-      requestAnimationFrame(() => setAnimateDancerTransitions(true));
+      manualTransitionStartRef.current = performance.now();
+      manualTransitionDurationRef.current = transitionMs;
+
+      const transitionTick = () => {
+        const elapsed = performance.now() - manualTransitionStartRef.current;
+        const progress = transitionMs <= 0 ? 1 : Math.min(1, elapsed / transitionMs);
+        setManualTransitionProgress(progress);
+        if (progress < 1) {
+          animFrameRef.current = requestAnimationFrame(transitionTick);
+        }
+      };
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = requestAnimationFrame(transitionTick);
 
       // Clear animation state after transition
       if (transitionClearTimeoutRef.current !== null) {
         window.clearTimeout(transitionClearTimeoutRef.current);
       }
       transitionClearTimeoutRef.current = window.setTimeout(() => {
+        cancelAnimationFrame(animFrameRef.current);
         setIsAnimating(false);
-        setAnimateDancerTransitions(false);
+        setManualTransitionProgress(0);
         setDancerAnimations([]);
         transitionClearTimeoutRef.current = null;
       }, transitionMs);
@@ -1400,8 +1682,9 @@ export default function App() {
         window.clearTimeout(transitionClearTimeoutRef.current);
         transitionClearTimeoutRef.current = null;
       }
+      cancelAnimationFrame(animFrameRef.current);
       setIsAnimating(false);
-      setAnimateDancerTransitions(false);
+      setManualTransitionProgress(0);
       setDancerAnimations([]);
       setPreviousFormationId(selectedFormationId);
       setSelectedFormationId(id);
@@ -1591,10 +1874,12 @@ export default function App() {
       const currentPos = currentMap.get(dancerId);
 
       if (prevPos && currentPos) {
+        const path = getTransitionPathForDancer(previous.formation, dancerId, prevPos, currentPos);
+        const point = getPointOnPath(path, prevPos, currentPos, t);
         rendered.push({
           dancerId,
-          x: prevPos.x + (currentPos.x - prevPos.x) * t,
-          y: prevPos.y + (currentPos.y - prevPos.y) * t,
+          x: point.x,
+          y: point.y,
           opacity: 1
         });
         return;
@@ -2032,6 +2317,17 @@ export default function App() {
     };
   }, [isDraggingPlayhead, timelineDuration, timelineContainerWidth]);
 
+  useEffect(() => {
+    if (!draggedPathHandle) return;
+
+    window.addEventListener('mousemove', handlePathHandleDragMove);
+    window.addEventListener('mouseup', handlePathHandleDragEnd);
+    return () => {
+      window.removeEventListener('mousemove', handlePathHandleDragMove);
+      window.removeEventListener('mouseup', handlePathHandleDragEnd);
+    };
+  }, [draggedPathHandle, selectedFormationId, formations]);
+
   const executeDeleteFormation = (formationId: string) => {
     const newFormations = formations.filter((f) => f.id !== formationId);
     if (newFormations.length === formations.length) {
@@ -2279,6 +2575,27 @@ export default function App() {
   }, [selectedFormation]);
 
   useEffect(() => {
+    if (!isPathEditMode) return;
+    setSelectedDancerIds((prev) => {
+      if (prev.size <= 1) return prev;
+      return new Set([Array.from(prev)[0]]);
+    });
+  }, [isPathEditMode]);
+
+  useEffect(() => {
+    if (!isPathEditMode || !selectedFormation || selectedDancerIds.size === 0) return;
+    const nextFormation = getNextFormationFor(selectedFormation.id);
+    if (!nextFormation) return;
+
+    const selectedId = Array.from(selectedDancerIds)[0];
+    const existsInCurrent = selectedFormation.dancers.some((dancerPos) => dancerPos.dancerId === selectedId);
+    const existsInNext = nextFormation.dancers.some((dancerPos) => dancerPos.dancerId === selectedId);
+    if (!existsInCurrent || !existsInNext) {
+      setSelectedDancerIds(new Set());
+    }
+  }, [isPathEditMode, selectedFormation, selectedDancerIds, formations]);
+
+  useEffect(() => {
     setSelectedTransitionDividerIndex((current) => {
       if (current == null) return current;
       const maxDividerIndex = formations.length - 2;
@@ -2318,6 +2635,20 @@ export default function App() {
         transitionToNextSeconds: clampTransitionSeconds(formation.transitionToNextSeconds ?? DEFAULT_FORMATION_TRANSITION_SECONDS),
         dancerCount: savedDancers.length,
         dancers: savedDancers,
+        transitionPaths: formation.transitionPaths
+          ? Object.fromEntries(
+              Object.entries(formation.transitionPaths).map(([dancerId, path]) => [
+                dancerId,
+                {
+                  type: path.type,
+                  controlPoints: path.controlPoints.map((point) => ({
+                    xRatio: safeStageWidth > 0 ? Math.max(0, Math.min(1, point.x / safeStageWidth)) : 0,
+                    yRatio: safeStageHeight > 0 ? Math.max(0, Math.min(1, point.y / safeStageHeight)) : 0
+                  }))
+                }
+              ])
+            )
+          : undefined,
         updatedAt: now
       };
     }).filter((formation) => formation.dancerCount > 0);
@@ -2477,28 +2808,78 @@ export default function App() {
     };
   }, [formations, timelineContainerWidth, timelineDuration, selectedFormationId]);
 
-  const activeTransitionMs = (() => {
-    if (!isAnimating || !previousFormationId || !selectedFormationId) return 0;
-    const previousIndex = formations.findIndex((formation) => formation.id === previousFormationId);
-    const selectedIndex = formations.findIndex((formation) => formation.id === selectedFormationId);
-    if (previousIndex < 0 || selectedIndex !== previousIndex + 1) return 0;
-    return getTransitionMsForDivider(previousIndex);
-  })();
+  const selectedFormationNext = getNextFormationFor(selectedFormationId);
+  const selectedPathEditDancer = activePathPreviewDancerId
+    ? selectedFormation?.dancers.find((dancerPos) => dancerPos.dancerId === activePathPreviewDancerId) ?? null
+    : null;
+  const selectedPathEditDancerNext = activePathPreviewDancerId
+    ? selectedFormationNext?.dancers.find((dancerPos) => dancerPos.dancerId === activePathPreviewDancerId) ?? null
+    : null;
+  const selectedPathEditPath = selectedFormation && selectedPathEditDancer && selectedPathEditDancerNext
+    ? getTransitionPathForDancer(
+        selectedFormation,
+        selectedPathEditDancer.dancerId,
+        { x: selectedPathEditDancer.x, y: selectedPathEditDancer.y },
+        { x: selectedPathEditDancerNext.x, y: selectedPathEditDancerNext.y }
+      )
+    : null;
+  const selectedPathType = selectedPathEditPath?.type ?? 'straight';
+
+  const handlePathTypeChange = (pathType: PathType) => {
+    if (!selectedFormation || !selectedPathEditDancer || !selectedPathEditDancerNext) return;
+    if (selectedPathType === pathType) return;
+    pushUndoSnapshot();
+    updateTransitionPathForDancer(
+      selectedFormation.id,
+      selectedPathEditDancer.dancerId,
+      {
+        type: pathType,
+        controlPoints: getDefaultPathControlPoints(
+          pathType,
+          { x: selectedPathEditDancer.x, y: selectedPathEditDancer.y },
+          { x: selectedPathEditDancerNext.x, y: selectedPathEditDancerNext.y }
+        )
+      }
+    );
+  };
+
+  const handlePathHandleMouseDown = (e: React.MouseEvent, dancerId: string, controlIndex: number) => {
+    e.stopPropagation();
+    pushUndoSnapshot();
+    setDraggedPathHandle({ dancerId, controlIndex });
+  };
 
   const renderedStageDancers = isAnimating
     ? dancerAnimations.map((animation) => {
         const dancer = dancers.find((d) => d.id === animation.dancerId);
         if (!dancer) return null;
 
+        const point = animation.type === 'move'
+          ? getPointOnPath(
+              animation.path,
+              { x: animation.startX, y: animation.startY },
+              { x: animation.endX, y: animation.endY },
+              manualTransitionProgress
+            )
+          : {
+              x: animation.startX + (animation.endX - animation.startX) * manualTransitionProgress,
+              y: animation.startY + (animation.endY - animation.startY) * manualTransitionProgress
+            };
+
+        const opacity = animation.type === 'exit'
+          ? 1 - manualTransitionProgress
+          : animation.type === 'enter'
+            ? manualTransitionProgress
+            : 1;
+
         return {
           key: `${animation.type}-${animation.dancerId}`,
           dancer,
           dancerId: animation.dancerId,
-          x: animateDancerTransitions ? animation.endX : animation.startX,
-          y: animateDancerTransitions ? animation.endY : animation.startY,
-          opacity: animation.type === 'exit' ? (animateDancerTransitions ? 0 : 1) : 1,
-          isSelected: selectedDancerIds.has(animation.dancerId),
-          useTransition: true
+          x: point.x,
+          y: point.y,
+          opacity,
+          isSelected: selectedDancerIds.has(animation.dancerId)
         };
       }).filter((value): value is {
         key: string;
@@ -2508,7 +2889,6 @@ export default function App() {
         y: number;
         opacity: number;
         isSelected: boolean;
-        useTransition: boolean;
       } => value !== null)
     : selectedFormation?.dancers.map((dancerPos) => {
         const dancer = dancers.find((d) => d.id === dancerPos.dancerId);
@@ -2521,8 +2901,7 @@ export default function App() {
           x: dancerPos.x,
           y: dancerPos.y,
           opacity: 1,
-          isSelected: selectedDancerIds.has(dancer.id),
-          useTransition: false
+          isSelected: selectedDancerIds.has(dancer.id)
         };
       }).filter((value): value is {
         key: string;
@@ -2532,7 +2911,6 @@ export default function App() {
         y: number;
         opacity: number;
         isSelected: boolean;
-        useTransition: boolean;
       } => value !== null) ?? [];
 
   // Track timeline container width
@@ -2881,7 +3259,11 @@ export default function App() {
           )}
           <span className="text-[#999] text-[13px] font-medium">path edit mode</span>
           <button
-            onClick={() => setIsPathEditMode(!isPathEditMode)}
+            onClick={() => {
+              setIsPathEditMode((prev) => !prev);
+              setDraggedPathHandle(null);
+              setSelectedDancerIds(new Set());
+            }}
             className={`w-[46px] h-[26px] rounded-[13px] relative transition-colors ${
               isPathEditMode ? 'bg-[#8b72be]' : 'bg-[#3a3a3a]'
             }`}
@@ -2897,6 +3279,43 @@ export default function App() {
 
       {/* Main Content Area */}
       <div className="flex-1 flex relative overflow-hidden">
+        {isPathEditMode && (
+          <div className="absolute left-6 top-6 z-20 w-[250px] bg-[#252525]/95 border border-[#3a3a3a] rounded-[14px] shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur-sm">
+            <div className="px-4 py-3 border-b border-[#3a3a3a]">
+              <h3 className="text-white text-[14px] font-semibold tracking-wide">Path Edit Mode</h3>
+              <p className="text-[#9a9a9a] text-[12px] mt-1 leading-relaxed">
+                Select one dancer on the stage to edit the path into the next formation.
+              </p>
+            </div>
+            <div className="p-3 flex flex-col gap-2">
+              {!selectedFormationNext ? (
+                <div className="text-[#8f8f8f] text-[12px] leading-relaxed">
+                  Choose a formation that has a next formation to edit its transition path.
+                </div>
+              ) : !selectedPathEditDancer || !selectedPathEditDancerNext ? (
+                <div className="text-[#8f8f8f] text-[12px] leading-relaxed">
+                  Click a dancer that exists in both <span className="text-white">{selectedFormation?.name}</span> and <span className="text-white">{selectedFormationNext.name}</span>.
+                </div>
+              ) : (
+                PATH_TYPE_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    onClick={() => handlePathTypeChange(option.id)}
+                    className={`text-left px-3 py-2.5 rounded-[10px] border transition-colors ${
+                      selectedPathType === option.id
+                        ? 'bg-[#3a3550] border-[#8b72be]'
+                        : 'bg-[#2d2d2d] border-[#3a3a3a] hover:bg-[#333]'
+                    }`}
+                  >
+                    <div className="text-white text-[13px] font-medium">{option.label}</div>
+                    <div className="text-[#989898] text-[11px] leading-relaxed mt-1">{option.description}</div>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Left Panel (Formations List) */}
         <div
           className={`absolute left-0 top-0 bottom-[150px] bg-[#252525] rounded-r-[7px] border-r border-[#333] transition-transform duration-300 z-10 ${
@@ -2969,7 +3388,9 @@ export default function App() {
             <div className="flex gap-6 items-start">
               <div
                 ref={stageRef}
-                className={`bg-[#28292a] rounded-[16px] border-[3px] relative overflow-hidden cursor-crosshair ${
+                className={`bg-[#28292a] rounded-[16px] border-[3px] relative overflow-hidden ${
+                  isPathEditMode ? 'cursor-default' : 'cursor-crosshair'
+                } ${
                   isStageLibraryDragOver || isStagePeopleDragOver
                     ? 'border-[#b79ef2] shadow-[inset_0_0_0_3px_rgba(139,114,190,0.35)]'
                     : 'border-[#8b72be]'
@@ -2997,21 +3418,84 @@ export default function App() {
                     style={{ top: `${(line / (stageConfig.horizontalGridLines + 1)) * 100}%` }}
                   />
                 ))}
+
+                {isPathEditMode && selectedPathEditDancer && selectedPathEditDancerNext && selectedPathEditPath && (
+                  <>
+                    <svg className="absolute inset-0 pointer-events-none overflow-visible">
+                      <defs>
+                        <marker
+                          id="path-edit-arrow"
+                          markerWidth="10"
+                          markerHeight="10"
+                          refX="8"
+                          refY="5"
+                          orient="auto"
+                          markerUnits="strokeWidth"
+                        >
+                          <path d="M 0 0 L 10 5 L 0 10 z" fill="#d7ccf0" />
+                        </marker>
+                      </defs>
+                      <path
+                        d={getSvgPathDefinition(
+                          selectedPathEditPath,
+                          { x: selectedPathEditDancer.x, y: selectedPathEditDancer.y },
+                          { x: selectedPathEditDancerNext.x, y: selectedPathEditDancerNext.y }
+                        )}
+                        stroke="#d7ccf0"
+                        strokeWidth="4"
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        markerEnd="url(#path-edit-arrow)"
+                      />
+                    </svg>
+
+                    {selectedPathEditPath.controlPoints.map((point, index) => (
+                      <button
+                        key={`${selectedPathEditDancer.dancerId}-handle-${index}`}
+                        type="button"
+                        className="absolute w-5 h-5 rounded-full bg-white border-4 border-[#8b72be] shadow-[0_2px_10px_rgba(0,0,0,0.35)] cursor-grab active:cursor-grabbing"
+                        style={{
+                          left: `${point.x}px`,
+                          top: `${point.y}px`,
+                          transform: 'translate(-50%, -50%)'
+                        }}
+                        onMouseDown={(e) => handlePathHandleMouseDown(e, selectedPathEditDancer.dancerId, index)}
+                      />
+                    ))}
+
+                    {(() => {
+                      const dancerMeta = dancers.find((dancer) => dancer.id === selectedPathEditDancer.dancerId);
+                      if (!dancerMeta) return null;
+                      return (
+                        <div
+                          className="absolute w-[50px] h-[50px] rounded-full flex items-center justify-center text-white text-[18px] font-medium pointer-events-none border border-white/25"
+                          style={{
+                            left: `${selectedPathEditDancerNext.x}px`,
+                            top: `${selectedPathEditDancerNext.y}px`,
+                            transform: 'translate(-50%, -50%)',
+                            opacity: 0.35,
+                            backgroundColor: dancerMeta.color
+                          }}
+                        >
+                          {getDancerInitials(dancerMeta)}
+                        </div>
+                      );
+                    })()}
+                  </>
+                )}
                 
                 {/* Dancers */}
-                {renderedStageDancers.map(({ key, dancer, dancerId, x, y, opacity, isSelected, useTransition }) => (
+                {renderedStageDancers.map(({ key, dancer, dancerId, x, y, opacity, isSelected }) => (
                   <div
                     key={key}
-                    className={`dancer-circle absolute w-[50px] h-[50px] rounded-full flex items-center justify-center text-white text-[18px] font-medium cursor-move select-none ${
-                      useTransition ? 'transition-all ease-in-out' : ''
-                    } ${isSelected ? 'ring-4 ring-white' : ''}`}
+                    className={`dancer-circle absolute w-[50px] h-[50px] rounded-full flex items-center justify-center text-white text-[18px] font-medium cursor-move select-none ${isSelected ? 'ring-4 ring-white' : ''}`}
                     style={{
                       left: `${x}px`,
                       top: `${y}px`,
                       transform: 'translate(-50%, -50%)',
                       opacity,
-                      backgroundColor: dancer.color,
-                      transitionDuration: useTransition ? `${activeTransitionMs}ms` : undefined
+                      backgroundColor: dancer.color
                     }}
                     onMouseDown={(e) => handleDancerDragStart(e, dancerId)}
                   >
