@@ -67,6 +67,34 @@ interface StageConfig {
   horizontalGridLines: number;
 }
 
+interface LibraryFormationDancer {
+  sourceDancerId: string;
+  name: string;
+  color: string;
+  number: number;
+  xRatio: number;
+  yRatio: number;
+}
+
+interface LibraryFormationTemplate {
+  id: string;
+  projectId: string;
+  projectTitle: string;
+  formationId: string;
+  formationName: string;
+  duration: number;
+  dancerCount: number;
+  dancers: LibraryFormationDancer[];
+  updatedAt: number;
+}
+
+interface ProjectLibraryRecord {
+  projectId: string;
+  projectTitle: string;
+  updatedAt: number;
+  formations: LibraryFormationTemplate[];
+}
+
 // Home Screen Component
 function HomeScreen({ onOpenProject }: { onOpenProject: () => void }) {
   return (
@@ -259,6 +287,24 @@ const STAGE_MAX_HEIGHT = 1000;
 const GRID_MIN_LINES = 1;
 const GRID_MAX_LINES = 16;
 const STAGE_DRAG_THRESHOLD = 4;
+const PROJECT_LIBRARY_STORAGE_KEY = 'formation-station-project-library-v1';
+const PROJECT_LIBRARY_MAX_PROJECTS = 30;
+const FORMATION_LIBRARY_DRAG_TYPE = 'application/x-formation-library-template';
+
+const createProjectId = () => `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const readProjectLibraryFromStorage = (): ProjectLibraryRecord[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(PROJECT_LIBRARY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed as ProjectLibraryRecord[];
+  } catch {
+    return [];
+  }
+};
 
 export default function App() {
   const [showHomeScreen, setShowHomeScreen] = useState(true);
@@ -297,6 +343,10 @@ export default function App() {
   const [audioDuration, setAudioDuration] = useState<number | null>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [timelineContainerWidth, setTimelineContainerWidth] = useState(0);
+  const [currentProjectId, setCurrentProjectId] = useState(() => createProjectId());
+  const [projectLibrary, setProjectLibrary] = useState<ProjectLibraryRecord[]>(() => readProjectLibraryFromStorage());
+  const [draggedLibraryFormationId, setDraggedLibraryFormationId] = useState<string | null>(null);
+  const [isStageLibraryDragOver, setIsStageLibraryDragOver] = useState(false);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -475,6 +525,54 @@ export default function App() {
     setRecordStatus(`Stage set to ${normalized.width}x${normalized.height} (${Math.round(normalized.width / normalized.height * 100) / 100}:1), grid ${normalized.verticalGridLines}x${normalized.horizontalGridLines}.`);
   };
 
+  const handleOpenNewProject = () => {
+    stopPlayback();
+    stopRecording();
+
+    setCurrentProjectId(createProjectId());
+    setShowHomeScreen(false);
+    setIsPanelOpen(false);
+    setIsPathEditMode(false);
+    setFormations([]);
+    setSelectedFormationId(null);
+    setPreviousFormationId(null);
+    setDancerAnimations([]);
+    setIsAnimating(false);
+    setEditingFormationId(null);
+    setEditingNotes(false);
+    setDraggedFormation(null);
+    setDancers([]);
+    setSelectedDancerIds(new Set());
+    setDraggedDancer(null);
+    setSelectionBox(null);
+    setShowPeopleDropdown(false);
+    setRemovalDialog(null);
+    setProjectTitle('Hip Hop Piece Formations');
+    setEditingProjectTitle(false);
+    setContextMenu(null);
+    setFormationDeleteDialog(null);
+    undoStackRef.current = [];
+    setUndoDepth(0);
+    setShowAudioUpload(false);
+    setAudioFile(null);
+    setAudioDuration(null);
+    audioBufferRef.current = null;
+    setIsPlaying(false);
+    setIsRecording(false);
+    setRecordStatus(null);
+    setPlayheadTime(0);
+    playheadTimeRef.current = 0;
+    setIsDraggingPlayhead(false);
+    setStageConfig(DEFAULT_STAGE_CONFIG);
+    setSettingsDraft(DEFAULT_STAGE_CONFIG);
+    setShowSettingsDialog(false);
+    setShowHelpDialog(false);
+    setShowSearchDropdown(false);
+    setSearchQuery('');
+    setDraggedLibraryFormationId(null);
+    setIsStageLibraryDragOver(false);
+  };
+
   // Timeline duration: use audio duration if available, else derive from formations or default
   const formationSpanPx = formations.length > 0
     ? 40 + formations.reduce((s, f) => s + f.duration, 0)
@@ -504,10 +602,39 @@ export default function App() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   }
 
-  // Get unique dancer counts from all formations
-  const uniqueDancerCounts = Array.from(
-    new Set(formations.map(f => f.dancers.length))
-  ).sort((a, b) => b - a); // Sort descending
+  const previousProjectFormations = projectLibrary
+    .filter((project) => project.projectId !== currentProjectId)
+    .flatMap((project) => project.formations);
+
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+
+  const filteredLibraryFormations = previousProjectFormations.filter((template) => {
+    if (!normalizedSearchQuery) return true;
+    const tokens = [
+      template.formationName || '',
+      template.projectTitle || '',
+      template.dancerCount.toString(),
+      `${template.dancerCount} dancer`,
+      `${template.dancerCount} dancers`
+    ].map((value) => value.toLowerCase());
+    return tokens.some((token) => token.includes(normalizedSearchQuery));
+  });
+
+  const groupedLibraryFormations = filteredLibraryFormations.reduce<Record<number, LibraryFormationTemplate[]>>((acc, template) => {
+    if (!acc[template.dancerCount]) {
+      acc[template.dancerCount] = [];
+    }
+    acc[template.dancerCount].push(template);
+    return acc;
+  }, {});
+
+  Object.values(groupedLibraryFormations).forEach((group) => {
+    group.sort((a, b) => b.updatedAt - a.updatedAt);
+  });
+
+  const libraryDancerCountGroups = Object.keys(groupedLibraryFormations)
+    .map((value) => Number(value))
+    .sort((a, b) => b - a);
 
   const createNewFormation = () => {
     pushUndoSnapshot();
@@ -525,6 +652,132 @@ export default function App() {
     setFormations([...formations, newFormation]);
     setSelectedFormationId(newFormation.id);
     // New formations at the end don't need shifts as they're placed after all others
+  };
+
+  const getLibraryTemplateById = (templateId: string) => (
+    previousProjectFormations.find((template) => template.id === templateId) ?? null
+  );
+
+  const importFormationFromLibrary = (templateId: string) => {
+    const template = getLibraryTemplateById(templateId);
+    if (!template) {
+      setRecordStatus('Could not find that library formation.');
+      return;
+    }
+
+    pushUndoSnapshot();
+
+    let nextDancerNumber = dancers.reduce((maxNumber, dancer) => Math.max(maxNumber, dancer.number), 0) + 1;
+    const createdDancers: Dancer[] = [];
+    const importedFormationDancerIds = new Set<string>();
+    const signatureToExistingId = new Map<string, string>();
+
+    dancers.forEach((dancer) => {
+      const signature = `${dancer.name.trim().toLowerCase()}|${dancer.color.toLowerCase()}`;
+      if (!signatureToExistingId.has(signature)) {
+        signatureToExistingId.set(signature, dancer.id);
+      }
+    });
+
+    const importedPositions: DancerPosition[] = template.dancers.map((templateDancer, idx) => {
+      const dancerName = (templateDancer.name || '').trim() || `${nextDancerNumber}`;
+      const dancerColor = (templateDancer.color || '').trim() || DANCER_COLOR_PALETTE[(nextDancerNumber - 1) % DANCER_COLOR_PALETTE.length];
+      const signature = `${dancerName.toLowerCase()}|${dancerColor.toLowerCase()}`;
+      const reusableDancerId = signatureToExistingId.get(signature);
+
+      let targetDancerId = reusableDancerId && !importedFormationDancerIds.has(reusableDancerId)
+        ? reusableDancerId
+        : null;
+
+      if (!targetDancerId) {
+        const createdDancer: Dancer = {
+          id: `dancer-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+          name: dancerName,
+          number: nextDancerNumber,
+          color: dancerColor
+        };
+        nextDancerNumber += 1;
+        createdDancers.push(createdDancer);
+        signatureToExistingId.set(signature, createdDancer.id);
+        targetDancerId = createdDancer.id;
+      }
+
+      importedFormationDancerIds.add(targetDancerId);
+
+      const xRatio = Number.isFinite(templateDancer.xRatio) ? templateDancer.xRatio : 0.5;
+      const yRatio = Number.isFinite(templateDancer.yRatio) ? templateDancer.yRatio : 0.5;
+      const x = Math.max(0, Math.min(safeStageWidth, xRatio * safeStageWidth));
+      const y = Math.max(0, Math.min(safeStageHeight, yRatio * safeStageHeight));
+
+      return {
+        dancerId: targetDancerId,
+        x,
+        y
+      };
+    });
+
+    const baseName = `${template.formationName || 'Imported Formation'} (Imported)`;
+    let importedFormationName = baseName;
+    let nameSuffix = 2;
+    const existingNames = new Set(formations.map((formation) => formation.name.toLowerCase()));
+    while (existingNames.has(importedFormationName.toLowerCase())) {
+      importedFormationName = `${baseName} ${nameSuffix}`;
+      nameSuffix += 1;
+    }
+
+    const importedFormation: Formation = {
+      id: `formation-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: importedFormationName,
+      startTime: 0,
+      duration: Math.max(50, Math.round(template.duration || 170)),
+      notes: `Imported from ${template.projectTitle}`,
+      dancers: importedPositions
+    };
+
+    if (createdDancers.length > 0) {
+      setDancers([...dancers, ...createdDancers]);
+    }
+    setFormations([...formations, importedFormation]);
+    setSelectedFormationId(importedFormation.id);
+    setPreviousFormationId(selectedFormationId);
+    setSelectedDancerIds(new Set());
+    setShowSearchDropdown(false);
+    setSearchQuery('');
+    setRecordStatus(`Imported "${template.formationName}" from ${template.projectTitle}.`);
+  };
+
+  const handleLibraryTemplateDragStart = (e: React.DragEvent<HTMLDivElement>, templateId: string) => {
+    e.dataTransfer.setData(FORMATION_LIBRARY_DRAG_TYPE, templateId);
+    e.dataTransfer.effectAllowed = 'copy';
+    setDraggedLibraryFormationId(templateId);
+  };
+
+  const handleLibraryTemplateDragEnd = () => {
+    setDraggedLibraryFormationId(null);
+    setIsStageLibraryDragOver(false);
+  };
+
+  const handleStageLibraryDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    const supportedDrag = Array.from(e.dataTransfer.types).includes(FORMATION_LIBRARY_DRAG_TYPE);
+    if (!supportedDrag) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!isStageLibraryDragOver) {
+      setIsStageLibraryDragOver(true);
+    }
+  };
+
+  const handleStageLibraryDragLeave = () => {
+    setIsStageLibraryDragOver(false);
+  };
+
+  const handleStageLibraryDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    const templateId = e.dataTransfer.getData(FORMATION_LIBRARY_DRAG_TYPE);
+    if (!templateId) return;
+    e.preventDefault();
+    setIsStageLibraryDragOver(false);
+    setDraggedLibraryFormationId(null);
+    importFormationFromLibrary(templateId);
   };
 
   const addDancerAtPosition = (x: number, y: number) => {
@@ -1643,6 +1896,59 @@ export default function App() {
     });
   }, [selectedFormation]);
 
+  useEffect(() => {
+    const dancerById = new Map(dancers.map((dancer) => [dancer.id, dancer]));
+    const now = Date.now();
+    const normalizedProjectTitle = projectTitle.trim() || 'Untitled Project';
+
+    const savedFormations: LibraryFormationTemplate[] = formations.map((formation) => {
+      const savedDancers: LibraryFormationDancer[] = formation.dancers.map((dancerPos) => {
+        const dancerMeta = dancerById.get(dancerPos.dancerId);
+        const fallbackNumber = dancerMeta?.number ?? 0;
+        return {
+          sourceDancerId: dancerPos.dancerId,
+          name: dancerMeta?.name ?? `Dancer ${fallbackNumber}`,
+          color: dancerMeta?.color ?? DANCER_COLOR_PALETTE[fallbackNumber % DANCER_COLOR_PALETTE.length],
+          number: fallbackNumber,
+          xRatio: safeStageWidth > 0 ? Math.max(0, Math.min(1, dancerPos.x / safeStageWidth)) : 0,
+          yRatio: safeStageHeight > 0 ? Math.max(0, Math.min(1, dancerPos.y / safeStageHeight)) : 0
+        };
+      });
+
+      return {
+        id: `${currentProjectId}::${formation.id}`,
+        projectId: currentProjectId,
+        projectTitle: normalizedProjectTitle,
+        formationId: formation.id,
+        formationName: formation.name,
+        duration: formation.duration,
+        dancerCount: savedDancers.length,
+        dancers: savedDancers,
+        updatedAt: now
+      };
+    }).filter((formation) => formation.dancerCount > 0);
+
+    const currentProjectRecord: ProjectLibraryRecord = {
+      projectId: currentProjectId,
+      projectTitle: normalizedProjectTitle,
+      updatedAt: now,
+      formations: savedFormations
+    };
+
+    setProjectLibrary((prevProjects) => {
+      const otherProjects = prevProjects.filter((project) => project.projectId !== currentProjectId);
+      const nextProjects = [currentProjectRecord, ...otherProjects]
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, PROJECT_LIBRARY_MAX_PROJECTS);
+      try {
+        window.localStorage.setItem(PROJECT_LIBRARY_STORAGE_KEY, JSON.stringify(nextProjects));
+      } catch {
+        // Storage can fail in private mode or full quota; keep in-memory data.
+      }
+      return nextProjects;
+    });
+  }, [currentProjectId, projectTitle, formations, dancers, safeStageWidth, safeStageHeight]);
+
   // Close people dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -1755,7 +2061,7 @@ export default function App() {
   }, [showHomeScreen]);
 
   if (showHomeScreen) {
-    return <HomeScreen onOpenProject={() => setShowHomeScreen(false)} />;
+    return <HomeScreen onOpenProject={handleOpenNewProject} />;
   }
 
   return (
@@ -1831,31 +2137,72 @@ export default function App() {
             {showSearchDropdown && (
               <div 
                 ref={searchDropdownRef}
-                className="absolute top-[calc(100%+4px)] left-0 bg-[#252525] border border-[#333] rounded-[7px] shadow-lg z-50 w-[280px]"
+                className="absolute top-[calc(100%+4px)] left-0 bg-[#252525] border border-[#333] rounded-[7px] shadow-lg z-50 w-[430px]"
               >
                 <div className="p-3 border-b border-[#333]">
                   <input
                     type="text"
                     className="w-full bg-transparent text-white text-[14px] px-3 py-2 rounded-[5px] outline-none border border-white/50 focus:border-white placeholder:text-white/20"
-                    placeholder="search for number of dancers!"
+                    placeholder="Search formations, project name, or dancer count"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                   />
                 </div>
-                <div className="p-3 flex flex-col gap-2 max-h-[300px] overflow-y-auto">
-                  {uniqueDancerCounts.length === 0 ? (
-                    <div className="px-3 py-2 text-[#666] text-[14px]">No formations yet</div>
+                <div className="p-3 flex flex-col gap-3 max-h-[360px] overflow-y-auto">
+                  {previousProjectFormations.length === 0 ? (
+                    <div className="px-3 py-3 text-[#777] text-[13px] leading-relaxed">
+                      No saved formations from previous projects yet.
+                      Open another project and create formations to build your searchable library.
+                    </div>
+                  ) : filteredLibraryFormations.length === 0 ? (
+                    <div className="px-3 py-3 text-[#777] text-[13px]">No matching formations found.</div>
                   ) : (
-                    uniqueDancerCounts
-                      .filter(count => count.toString().includes(searchQuery))
-                      .map(count => (
-                        <div
-                          key={count}
-                          className="bg-[#2e2e2e] border border-[#3a3a3a] rounded-[8px] px-3 py-2.5 hover:bg-[#333] transition-colors cursor-pointer"
-                        >
-                          <p className="text-[#ccc] text-[14px]">{count} {count === 1 ? 'Dancer' : 'Dancers'}</p>
+                    libraryDancerCountGroups.map((dancerCount) => (
+                      <div key={dancerCount} className="flex flex-col gap-2">
+                        <div className="px-1 text-[#999] text-[12px] uppercase tracking-wide">
+                          {dancerCount} {dancerCount === 1 ? 'Dancer' : 'Dancers'}
                         </div>
-                      ))
+                        {groupedLibraryFormations[dancerCount].map((template) => (
+                          <div
+                            key={template.id}
+                            draggable
+                            onDragStart={(e) => handleLibraryTemplateDragStart(e, template.id)}
+                            onDragEnd={handleLibraryTemplateDragEnd}
+                            onClick={() => importFormationFromLibrary(template.id)}
+                            className={`bg-[#2e2e2e] border border-[#3a3a3a] rounded-[8px] p-2.5 hover:bg-[#333] transition-colors cursor-grab active:cursor-grabbing ${
+                              draggedLibraryFormationId === template.id ? 'opacity-60' : ''
+                            }`}
+                            title="Drag onto the stage to import, or click to import"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="text-white text-[13px] truncate">{template.formationName}</p>
+                                <p className="text-[#9a9a9a] text-[11px] truncate">{template.projectTitle}</p>
+                              </div>
+                              <span className="text-[#8b72be] text-[11px] whitespace-nowrap">{template.duration}px</span>
+                            </div>
+                            <div className="mt-2 h-[72px] bg-[#1d1d1d] border border-[#3a3a3a] rounded-[6px] relative overflow-hidden">
+                              {template.dancers.map((dancer, idx) => (
+                                <div
+                                  key={`${template.id}-${dancer.sourceDancerId}-${idx}`}
+                                  className="absolute w-[9px] h-[9px] rounded-full border border-black/20"
+                                  style={{
+                                    left: `${Math.max(0, Math.min(100, dancer.xRatio * 100))}%`,
+                                    top: `${Math.max(0, Math.min(100, dancer.yRatio * 100))}%`,
+                                    transform: 'translate(-50%, -50%)',
+                                    backgroundColor: dancer.color
+                                  }}
+                                />
+                              ))}
+                            </div>
+                            <div className="mt-2 flex justify-between text-[#888] text-[11px]">
+                              <span>Drag thumbnail to stage</span>
+                              <span>{new Date(template.updatedAt).toLocaleDateString()}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ))
                   )}
                 </div>
               </div>
@@ -2068,9 +2415,15 @@ export default function App() {
             <div className="flex gap-6 items-start">
               <div
                 ref={stageRef}
-                className="bg-[#28292a] rounded-[16px] border-[3px] border-[#8b72be] relative overflow-hidden cursor-crosshair" 
+                className={`bg-[#28292a] rounded-[16px] border-[3px] relative overflow-hidden cursor-crosshair ${
+                  isStageLibraryDragOver ? 'border-[#b79ef2] shadow-[inset_0_0_0_3px_rgba(139,114,190,0.35)]' : 'border-[#8b72be]'
+                }`}
                 style={{ width: `${safeStageWidth}px`, height: `${safeStageHeight}px` }}
                 onMouseDown={handleStageMouseDown}
+                onDragEnter={handleStageLibraryDragOver}
+                onDragOver={handleStageLibraryDragOver}
+                onDragLeave={handleStageLibraryDragLeave}
+                onDrop={handleStageLibraryDrop}
               >
                 {/* Vertical gridlines */}
                 {Array.from({ length: stageConfig.verticalGridLines }, (_, idx) => idx + 1).map((line) => (
@@ -2507,6 +2860,7 @@ export default function App() {
                   <li>Adjust formation length using the <span className="text-white font-medium">length - / +</span> controls in the top bar.</li>
                   <li>You can also drag a formation block&apos;s right edge in the timeline to resize its duration.</li>
                   <li>Use the top-right <span className="text-white font-medium">Settings</span> button to change stage size, ratio, and grid lines.</li>
+                  <li>Use the <span className="text-white font-medium">Search</span> button to browse formation thumbnails from previous projects by dancer count, then drag a thumbnail to the stage to import it.</li>
                 </ul>
               </section>
 
