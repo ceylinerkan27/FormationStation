@@ -787,8 +787,12 @@ export default function App() {
 
   const createNewFormation = () => {
     pushUndoSnapshot();
-    // Copy previous formation's dancers if there is one
-    const previousFormation = formations.length > 0 ? formations[formations.length - 1] : null;
+    // Start from the currently selected formation so users can keep editing that cast/placement.
+    // Fallback to the last formation when nothing is selected.
+    const selectedFormation = selectedFormationId
+      ? formations.find((formation) => formation.id === selectedFormationId) ?? null
+      : null;
+    const sourceFormation = selectedFormation ?? (formations.length > 0 ? formations[formations.length - 1] : null);
     
     const newFormation: Formation = {
       id: `formation-${Date.now()}`,
@@ -797,7 +801,7 @@ export default function App() {
       duration: 170,
       transitionToNextSeconds: DEFAULT_FORMATION_TRANSITION_SECONDS,
       notes: '',
-      dancers: previousFormation ? [...previousFormation.dancers] : []
+      dancers: sourceFormation ? sourceFormation.dancers.map((dancerPos) => ({ ...dancerPos })) : []
     };
     setFormations([...formations, newFormation]);
     setSelectedFormationId(newFormation.id);
@@ -1290,6 +1294,24 @@ export default function App() {
       return;
     }
 
+    let resolvedNextFormation = nextFormation;
+    const shouldCarryDancersIntoEmptyFormation =
+      !isPlaying &&
+      !isRecording &&
+      currentFormation.dancers.length > 0 &&
+      nextFormation.dancers.length === 0;
+
+    if (shouldCarryDancersIntoEmptyFormation) {
+      const carriedDancers = currentFormation.dancers.map((dancerPos) => ({ ...dancerPos }));
+      pushUndoSnapshot();
+      setFormations((prevFormations) => prevFormations.map((formation) => (
+        formation.id === id
+          ? { ...formation, dancers: carriedDancers }
+          : formation
+      )));
+      resolvedNextFormation = { ...nextFormation, dancers: carriedDancers };
+    }
+
     const currentIndex = formations.findIndex(f => f.id === selectedFormationId);
     const nextIndex = formations.findIndex(f => f.id === id);
 
@@ -1304,13 +1326,13 @@ export default function App() {
       
       // Get dancer IDs in current and next formations
       const currentDancerIds = new Set(currentFormation.dancers.map(d => d.dancerId));
-      const nextDancerIds = new Set(nextFormation.dancers.map(d => d.dancerId));
+      const nextDancerIds = new Set(resolvedNextFormation.dancers.map(d => d.dancerId));
       
       // Dancers moving between formations
       currentFormation.dancers.forEach(dancerPos => {
         if (nextDancerIds.has(dancerPos.dancerId)) {
           // Dancer exists in both - animate to new position
-          const nextPos = nextFormation.dancers.find(d => d.dancerId === dancerPos.dancerId);
+          const nextPos = resolvedNextFormation.dancers.find(d => d.dancerId === dancerPos.dancerId);
           if (nextPos) {
             animations.push({
               dancerId: dancerPos.dancerId,
@@ -1338,7 +1360,7 @@ export default function App() {
       });
       
       // Dancers entering (in next but not in current)
-      nextFormation.dancers.forEach(dancerPos => {
+      resolvedNextFormation.dancers.forEach(dancerPos => {
         if (!currentDancerIds.has(dancerPos.dancerId)) {
           const edge = getNearestEdge(dancerPos.x, dancerPos.y);
           const enterPos = getEnterPosition(dancerPos.x, dancerPos.y, edge);
