@@ -43,6 +43,19 @@ interface SelectionBox {
   additive: boolean;
 }
 
+interface ResizedFormationState {
+  id: string;
+  startX: number;
+  startDuration: number;
+}
+
+interface ReorderedFormationState {
+  id: string;
+  startX: number;
+  pointerOffsetX: number;
+  currentX: number;
+}
+
 interface Formation {
   id: string;
   name: string;
@@ -287,6 +300,7 @@ const STAGE_MAX_HEIGHT = 1000;
 const GRID_MIN_LINES = 1;
 const GRID_MAX_LINES = 16;
 const STAGE_DRAG_THRESHOLD = 4;
+const TIMELINE_BLOCK_HEIGHT = 39;
 const PROJECT_LIBRARY_STORAGE_KEY = 'formation-station-project-library-v1';
 const PROJECT_LIBRARY_MAX_PROJECTS = 30;
 const FORMATION_LIBRARY_DRAG_TYPE = 'application/x-formation-library-template';
@@ -319,7 +333,8 @@ export default function App() {
   const [animateDancerTransitions, setAnimateDancerTransitions] = useState(false);
   const [editingFormationId, setEditingFormationId] = useState<string | null>(null);
   const [editingNotes, setEditingNotes] = useState(false);
-  const [draggedFormation, setDraggedFormation] = useState<{ id: string; startX: number; startDuration: number } | null>(null);
+  const [resizedFormation, setResizedFormation] = useState<ResizedFormationState | null>(null);
+  const [reorderedFormation, setReorderedFormation] = useState<ReorderedFormationState | null>(null);
   
   const [dancers, setDancers] = useState<Dancer[]>([]);
   const [selectedDancerIds, setSelectedDancerIds] = useState<Set<string>>(new Set());
@@ -382,6 +397,9 @@ export default function App() {
   const searchDropdownRef = useRef<HTMLDivElement>(null);
   const dragMovedRef = useRef(false);
   const dragUndoPushedRef = useRef(false);
+  const formationReorderMovedRef = useRef(false);
+  const formationReorderUndoPushedRef = useRef(false);
+  const suppressFormationClickRef = useRef(false);
 
   const selectedFormation = formations.find(f => f.id === selectedFormationId);
 
@@ -1116,6 +1134,11 @@ export default function App() {
   };
 
   const handleFormationClick = (id: string) => {
+    if (suppressFormationClickRef.current) {
+      suppressFormationClickRef.current = false;
+      return;
+    }
+
     const currentFormation = formations.find(f => f.id === selectedFormationId);
     const nextFormation = formations.find(f => f.id === id);
     
@@ -1899,7 +1922,7 @@ export default function App() {
     const formation = formations.find(f => f.id === id);
     if (formation) {
       pushUndoSnapshot();
-      setDraggedFormation({
+      setResizedFormation({
         id,
         startX: e.clientX,
         startDuration: formation.duration
@@ -1907,30 +1930,108 @@ export default function App() {
     }
   };
 
-  const handleMouseMove = (e: MouseEvent) => {
-    if (!draggedFormation) return;
-    const deltaX = e.clientX - draggedFormation.startX;
-    const newDuration = Math.max(50, draggedFormation.startDuration + deltaX);
+  const handleFormationReorderStart = (e: React.MouseEvent, id: string) => {
+    if (!timelineRef.current || editingFormationId === id) return;
+
+    const blockRect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+    formationReorderMovedRef.current = false;
+    formationReorderUndoPushedRef.current = false;
+    suppressFormationClickRef.current = false;
+    setReorderedFormation({
+      id,
+      startX: e.clientX,
+      pointerOffsetX: e.clientX - blockRect.left,
+      currentX: e.clientX
+    });
+  };
+
+  const handleResizeMove = (e: MouseEvent) => {
+    if (!resizedFormation) return;
+    const deltaX = e.clientX - resizedFormation.startX;
+    const newDuration = Math.max(50, resizedFormation.startDuration + deltaX);
     setFormations(formations.map(f =>
-      f.id === draggedFormation.id ? { ...f, duration: newDuration } : f
+      f.id === resizedFormation.id ? { ...f, duration: newDuration } : f
     ));
   };
 
-  const handleMouseUp = () => {
-    setDraggedFormation(null);
+  const handleFormationReorderMove = (e: MouseEvent) => {
+    if (!reorderedFormation || !timelineRef.current) return;
+
+    setReorderedFormation((current) => current ? { ...current, currentX: e.clientX } : current);
+
+    const rect = timelineRef.current.getBoundingClientRect();
+    const dragLeft = e.clientX - rect.left - reorderedFormation.pointerOffsetX;
+    const dragWidth = formations.find((formation) => formation.id === reorderedFormation.id)?.duration ?? 0;
+    const dragCenter = dragLeft + (dragWidth / 2);
+
+    if (Math.abs(e.clientX - reorderedFormation.startX) > STAGE_DRAG_THRESHOLD) {
+      formationReorderMovedRef.current = true;
+    }
+
+    const withoutDragged = formations.filter((formation) => formation.id !== reorderedFormation.id);
+    let cursor = 40;
+    let targetIndex = withoutDragged.length;
+    for (let idx = 0; idx < withoutDragged.length; idx += 1) {
+      const formation = withoutDragged[idx];
+      const center = cursor + (formation.duration / 2);
+      if (dragCenter < center) {
+        targetIndex = idx;
+        break;
+      }
+      cursor += formation.duration;
+    }
+
+    const currentIndex = formations.findIndex((formation) => formation.id === reorderedFormation.id);
+    const normalizedTargetIndex = Math.max(0, Math.min(targetIndex, formations.length - 1));
+    if (currentIndex === -1 || currentIndex === normalizedTargetIndex) return;
+
+    if (!formationReorderUndoPushedRef.current) {
+      pushUndoSnapshot();
+      formationReorderUndoPushedRef.current = true;
+    }
+
+    const dragged = formations[currentIndex];
+    const nextFormations = formations.filter((formation) => formation.id !== reorderedFormation.id);
+    nextFormations.splice(normalizedTargetIndex, 0, dragged);
+    setFormations(nextFormations);
+    formationReorderMovedRef.current = true;
+  };
+
+  const handleResizeEnd = () => {
+    setResizedFormation(null);
+  };
+
+  const handleFormationReorderEnd = () => {
+    if (formationReorderMovedRef.current) {
+      suppressFormationClickRef.current = true;
+    }
+    formationReorderMovedRef.current = false;
+    formationReorderUndoPushedRef.current = false;
+    setReorderedFormation(null);
   };
 
   // Timeline resize listeners
   useEffect(() => {
-    if (draggedFormation) {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
+    if (resizedFormation) {
+      window.addEventListener('mousemove', handleResizeMove);
+      window.addEventListener('mouseup', handleResizeEnd);
       return () => {
-        window.removeEventListener('mousemove', handleMouseMove);
-        window.removeEventListener('mouseup', handleMouseUp);
+        window.removeEventListener('mousemove', handleResizeMove);
+        window.removeEventListener('mouseup', handleResizeEnd);
       };
     }
-  }, [draggedFormation]);
+  }, [resizedFormation, formations]);
+
+  useEffect(() => {
+    if (reorderedFormation) {
+      window.addEventListener('mousemove', handleFormationReorderMove);
+      window.addEventListener('mouseup', handleFormationReorderEnd);
+      return () => {
+        window.removeEventListener('mousemove', handleFormationReorderMove);
+        window.removeEventListener('mouseup', handleFormationReorderEnd);
+      };
+    }
+  }, [reorderedFormation, formations]);
 
   // Dancer drag listeners
   useEffect(() => {
@@ -2703,43 +2804,59 @@ export default function App() {
             </button>
 
             {/* Formation Blocks */}
-            {formations.map((formation, index) => (
-              <div
-                key={formation.id}
-                className={`absolute top-1/2 -translate-y-1/2 h-[39px] bg-[rgba(139,114,190,0.2)] border border-[#8b72be] rounded-[5px] flex items-center justify-center cursor-pointer ${
-                  selectedFormationId === formation.id ? 'ring-2 ring-[#8b72be]' : ''
-                }`}
-                style={{
-                  left: `${40 + formations.slice(0, index).reduce((s, p) => s + p.duration, 0)}px`,
-                  width: `${formation.duration}px`
-                }}
-                onClick={() => handleFormationClick(formation.id)}
-                onDoubleClick={() => handleFormationDoubleClick(formation.id)}
-                onContextMenu={(e) => handleFormationContextMenu(e, formation.id)}
-              >
-                {editingFormationId === formation.id ? (
-                  <input
-                    autoFocus
-                    type="text"
-                    className="bg-transparent text-white text-[13px] text-center w-full outline-none"
-                    value={formation.name}
-                    onChange={(e) => handleFormationNameChange(formation.id, e.target.value)}
-                    onBlur={handleFormationNameBlur}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleFormationNameBlur();
-                    }}
-                  />
-                ) : (
-                  <span className="text-white text-[13px]">{formation.name}</span>
-                )}
-                
-                {/* Resize handle */}
+            {formations.map((formation, index) => {
+              const leftPx = 40 + formations.slice(0, index).reduce((s, p) => s + p.duration, 0);
+              const isDragged = reorderedFormation?.id === formation.id;
+              const timelineRect = timelineRef.current?.getBoundingClientRect();
+              const draggedLeft = isDragged && timelineRect
+                ? reorderedFormation.currentX - timelineRect.left - reorderedFormation.pointerOffsetX
+                : leftPx;
+              const translateX = isDragged ? draggedLeft - leftPx : 0;
+
+              return (
                 <div
-                  className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-[#8b72be] transition-colors"
-                  onMouseDown={(e) => handleResizeStart(e, formation.id)}
-                />
-              </div>
-            ))}
+                  key={formation.id}
+                  className={`absolute bg-[rgba(139,114,190,0.2)] border border-[#8b72be] rounded-[5px] flex items-center justify-center cursor-pointer ${
+                    selectedFormationId === formation.id ? 'ring-2 ring-[#8b72be]' : ''
+                  } ${isDragged ? 'shadow-[0_8px_24px_rgba(0,0,0,0.35)]' : ''}`}
+                  style={{
+                    left: `${leftPx}px`,
+                    top: `calc(50% - ${TIMELINE_BLOCK_HEIGHT / 2}px)`,
+                    width: `${formation.duration}px`,
+                    height: `${TIMELINE_BLOCK_HEIGHT}px`,
+                    transform: `translateX(${translateX}px)`,
+                    zIndex: isDragged ? 15 : 1,
+                    opacity: isDragged ? 0.92 : 1
+                  }}
+                  onMouseDown={(e) => handleFormationReorderStart(e, formation.id)}
+                  onClick={() => handleFormationClick(formation.id)}
+                  onDoubleClick={() => handleFormationDoubleClick(formation.id)}
+                  onContextMenu={(e) => handleFormationContextMenu(e, formation.id)}
+                >
+                  {editingFormationId === formation.id ? (
+                    <input
+                      autoFocus
+                      type="text"
+                      className="bg-transparent text-white text-[13px] text-center w-full outline-none"
+                      value={formation.name}
+                      onChange={(e) => handleFormationNameChange(formation.id, e.target.value)}
+                      onBlur={handleFormationNameBlur}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleFormationNameBlur();
+                      }}
+                    />
+                  ) : (
+                    <span className="text-white text-[13px]">{formation.name}</span>
+                  )}
+                  
+                  {/* Resize handle */}
+                  <div
+                    className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-[#8b72be] transition-colors"
+                    onMouseDown={(e) => handleResizeStart(e, formation.id)}
+                  />
+                </div>
+              );
+            })}
           </div>
 
           {/* Audio Track */}
