@@ -290,6 +290,7 @@ const STAGE_DRAG_THRESHOLD = 4;
 const PROJECT_LIBRARY_STORAGE_KEY = 'formation-station-project-library-v1';
 const PROJECT_LIBRARY_MAX_PROJECTS = 30;
 const FORMATION_LIBRARY_DRAG_TYPE = 'application/x-formation-library-template';
+const PEOPLE_DANCER_DRAG_TYPE = 'application/x-formation-station-dancer';
 
 const createProjectId = () => `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -325,6 +326,7 @@ export default function App() {
   const [draggedDancer, setDraggedDancer] = useState<DraggedDancerState | null>(null);
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [showPeopleDropdown, setShowPeopleDropdown] = useState(false);
+  const [draggedPeopleDancerId, setDraggedPeopleDancerId] = useState<string | null>(null);
   const [removalDialog, setRemovalDialog] = useState<{ dancerId: string; dancerName: string } | null>(null);
   
   const [projectTitle, setProjectTitle] = useState('Hip Hop Piece Formations');
@@ -371,6 +373,7 @@ export default function App() {
   
   const [showSearchDropdown, setShowSearchDropdown] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isStagePeopleDragOver, setIsStagePeopleDragOver] = useState(false);
   
   const timelineRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -779,6 +782,83 @@ export default function App() {
     setIsStageLibraryDragOver(false);
     setDraggedLibraryFormationId(null);
     importFormationFromLibrary(templateId);
+  };
+
+  const handlePeopleDancerDragStart = (e: React.DragEvent<HTMLDivElement>, dancerId: string) => {
+    e.dataTransfer.setData(PEOPLE_DANCER_DRAG_TYPE, dancerId);
+    e.dataTransfer.effectAllowed = 'copy';
+    setDraggedPeopleDancerId(dancerId);
+  };
+
+  const handlePeopleDancerDragEnd = () => {
+    setDraggedPeopleDancerId(null);
+    setIsStagePeopleDragOver(false);
+  };
+
+  const handleStagePeopleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    const supportedDrag = Array.from(e.dataTransfer.types).includes(PEOPLE_DANCER_DRAG_TYPE);
+    if (!supportedDrag || !selectedFormationId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!isStagePeopleDragOver) {
+      setIsStagePeopleDragOver(true);
+    }
+  };
+
+  const handleStagePeopleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!stageRef.current?.contains(e.relatedTarget as Node | null)) {
+      setIsStagePeopleDragOver(false);
+    }
+  };
+
+  const handleStagePeopleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    const dancerId = e.dataTransfer.getData(PEOPLE_DANCER_DRAG_TYPE);
+    if (!dancerId || !selectedFormationId) return;
+
+    e.preventDefault();
+    setIsStagePeopleDragOver(false);
+    setDraggedPeopleDancerId(null);
+
+    const coords = getStageCoordinates(e.clientX, e.clientY);
+    if (!coords || !selectedFormation) return;
+
+    const dancerExists = selectedFormation.dancers.some((dancerPos) => dancerPos.dancerId === dancerId);
+    if (dancerExists) return;
+
+    pushUndoSnapshot();
+    setFormations(formations.map((formation) => (
+      formation.id === selectedFormationId
+        ? {
+            ...formation,
+            dancers: [...formation.dancers, { dancerId, x: coords.x, y: coords.y }]
+          }
+        : formation
+    )));
+    setSelectedDancerIds(new Set([dancerId]));
+  };
+
+  const handleStageDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    handleStageLibraryDragOver(e);
+    handleStagePeopleDragOver(e);
+  };
+
+  const handleStageDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    handleStageLibraryDragOver(e);
+    handleStagePeopleDragOver(e);
+  };
+
+  const handleStageDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    handleStageLibraryDragLeave();
+    handleStagePeopleDragLeave(e);
+  };
+
+  const handleStageDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (Array.from(e.dataTransfer.types).includes(PEOPLE_DANCER_DRAG_TYPE)) {
+      handleStagePeopleDrop(e);
+      return;
+    }
+
+    handleStageLibraryDrop(e);
   };
 
   const addDancerAtPosition = (x: number, y: number) => {
@@ -2299,9 +2379,21 @@ export default function App() {
                     dancers.map(dancer => (
                       <div
                         key={dancer.id}
+                        draggable={!selectedFormation?.dancers.some((dancerPos) => dancerPos.dancerId === dancer.id)}
+                        onDragStart={(e) => handlePeopleDancerDragStart(e, dancer.id)}
+                        onDragEnd={handlePeopleDancerDragEnd}
                         className={`flex items-center gap-2 px-2 py-1.5 rounded ${
                           selectedDancerIds.has(dancer.id) ? 'bg-[#3a3550] ring-1 ring-[#8b72be]' : 'hover:bg-[#333]'
+                        } ${draggedPeopleDancerId === dancer.id ? 'opacity-60' : ''} ${
+                          selectedFormation?.dancers.some((dancerPos) => dancerPos.dancerId === dancer.id)
+                            ? 'cursor-default'
+                            : 'cursor-grab active:cursor-grabbing'
                         }`}
+                        title={
+                          selectedFormation?.dancers.some((dancerPos) => dancerPos.dancerId === dancer.id)
+                            ? 'Already in this formation'
+                            : 'Drag onto the stage to add to this formation'
+                        }
                       >
                         <label className="relative w-5 h-5 rounded-full border border-[#555] overflow-hidden cursor-pointer">
                           <input
@@ -2463,14 +2555,16 @@ export default function App() {
               <div
                 ref={stageRef}
                 className={`bg-[#28292a] rounded-[16px] border-[3px] relative overflow-hidden cursor-crosshair ${
-                  isStageLibraryDragOver ? 'border-[#b79ef2] shadow-[inset_0_0_0_3px_rgba(139,114,190,0.35)]' : 'border-[#8b72be]'
+                  isStageLibraryDragOver || isStagePeopleDragOver
+                    ? 'border-[#b79ef2] shadow-[inset_0_0_0_3px_rgba(139,114,190,0.35)]'
+                    : 'border-[#8b72be]'
                 }`}
                 style={{ width: `${safeStageWidth}px`, height: `${safeStageHeight}px` }}
                 onMouseDown={handleStageMouseDown}
-                onDragEnter={handleStageLibraryDragOver}
-                onDragOver={handleStageLibraryDragOver}
-                onDragLeave={handleStageLibraryDragLeave}
-                onDrop={handleStageLibraryDrop}
+                onDragEnter={handleStageDragEnter}
+                onDragOver={handleStageDragOver}
+                onDragLeave={handleStageDragLeave}
+                onDrop={handleStageDrop}
               >
                 {/* Vertical gridlines */}
                 {Array.from({ length: stageConfig.verticalGridLines }, (_, idx) => idx + 1).map((line) => (
