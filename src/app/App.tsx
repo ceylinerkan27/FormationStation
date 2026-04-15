@@ -61,6 +61,7 @@ interface Formation {
   name: string;
   startTime: number;
   duration: number;
+  transitionToNextSeconds?: number;
   notes: string;
   dancers: DancerPosition[];
 }
@@ -96,6 +97,7 @@ interface LibraryFormationTemplate {
   formationId: string;
   formationName: string;
   duration: number;
+  transitionToNextSeconds?: number;
   dancerCount: number;
   dancers: LibraryFormationDancer[];
   updatedAt: number;
@@ -355,7 +357,7 @@ export default function App() {
   const [showAudioUpload, setShowAudioUpload] = useState(false);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioDuration, setAudioDuration] = useState<number | null>(null);
-  const [formationTransitionSeconds, setFormationTransitionSeconds] = useState(DEFAULT_FORMATION_TRANSITION_SECONDS);
+  const [selectedTransitionDividerIndex, setSelectedTransitionDividerIndex] = useState<number | null>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [timelineContainerWidth, setTimelineContainerWidth] = useState(0);
   const [currentProjectId, setCurrentProjectId] = useState(() => createProjectId());
@@ -411,7 +413,32 @@ export default function App() {
 
   const safeStageWidth = Math.max(1, stageConfig.width);
   const safeStageHeight = Math.max(1, stageConfig.height);
-  const formationTransitionMs = Math.round(formationTransitionSeconds * 1000);
+  const getTransitionSecondsForDivider = (dividerIndex: number) => {
+    if (dividerIndex < 0 || dividerIndex >= formations.length - 1) {
+      return DEFAULT_FORMATION_TRANSITION_SECONDS;
+    }
+    return clampTransitionSeconds(formations[dividerIndex].transitionToNextSeconds ?? DEFAULT_FORMATION_TRANSITION_SECONDS);
+  };
+
+  const getTransitionMsForDivider = (dividerIndex: number) => Math.round(getTransitionSecondsForDivider(dividerIndex) * 1000);
+
+  const formatTransitionSeconds = (seconds: number) => {
+    const rounded = clampTransitionSeconds(seconds);
+    if (Number.isInteger(rounded)) return `${rounded}`;
+    return rounded.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  };
+
+  const selectedTransitionDividerIsValid =
+    selectedTransitionDividerIndex != null
+    && selectedTransitionDividerIndex >= 0
+    && selectedTransitionDividerIndex < formations.length - 1;
+  const selectedDividerIndex = selectedTransitionDividerIsValid ? selectedTransitionDividerIndex : null;
+  const selectedTransitionSeconds = selectedTransitionDividerIsValid
+    ? getTransitionSecondsForDivider(selectedDividerIndex as number)
+    : DEFAULT_FORMATION_TRANSITION_SECONDS;
+  const selectedTransitionLabel = selectedTransitionDividerIsValid
+    ? `${formations[selectedDividerIndex as number].name} -> ${formations[(selectedDividerIndex as number) + 1].name}`
+    : 'Click a divider';
 
   const getStageCoordinates = (clientX: number, clientY: number) => {
     const rect = stageRef.current?.getBoundingClientRect();
@@ -565,7 +592,7 @@ export default function App() {
     setIsAnimating(false);
     setEditingFormationId(null);
     setEditingNotes(false);
-    setDraggedFormation(null);
+    setReorderedFormation(null);
     setDancers([]);
     setSelectedDancerIds(new Set());
     setDraggedDancer(null);
@@ -582,7 +609,7 @@ export default function App() {
     setAudioFile(null);
     setAudioDuration(null);
     audioBufferRef.current = null;
-    setFormationTransitionSeconds(DEFAULT_FORMATION_TRANSITION_SECONDS);
+    setSelectedTransitionDividerIndex(null);
     setIsPlaying(false);
     setIsRecording(false);
     setRecordStatus(null);
@@ -625,6 +652,7 @@ export default function App() {
       name: template.formationName,
       startTime: 0,
       duration: template.duration,
+      transitionToNextSeconds: clampTransitionSeconds(template.transitionToNextSeconds ?? record.transitionSeconds ?? DEFAULT_FORMATION_TRANSITION_SECONDS),
       notes: '',
       dancers: template.dancers.map((d) => ({
         dancerId: d.sourceDancerId,
@@ -644,7 +672,7 @@ export default function App() {
     setIsAnimating(false);
     setEditingFormationId(null);
     setEditingNotes(false);
-    setDraggedFormation(null);
+    setReorderedFormation(null);
     setDancers(reconstructedDancers);
     setSelectedDancerIds(new Set());
     setDraggedDancer(null);
@@ -661,7 +689,7 @@ export default function App() {
     setAudioFile(null);
     setAudioDuration(null);
     audioBufferRef.current = null;
-    setFormationTransitionSeconds(clampTransitionSeconds(record.transitionSeconds ?? DEFAULT_FORMATION_TRANSITION_SECONDS));
+    setSelectedTransitionDividerIndex(null);
     setIsPlaying(false);
     setIsRecording(false);
     setRecordStatus(null);
@@ -767,11 +795,13 @@ export default function App() {
       name: `Formation ${formations.length + 1}`,
       startTime: 0,
       duration: 170,
+      transitionToNextSeconds: DEFAULT_FORMATION_TRANSITION_SECONDS,
       notes: '',
       dancers: previousFormation ? [...previousFormation.dancers] : []
     };
     setFormations([...formations, newFormation]);
     setSelectedFormationId(newFormation.id);
+    setSelectedTransitionDividerIndex(formations.length > 0 ? formations.length - 1 : null);
     // New formations at the end don't need shifts as they're placed after all others
   };
 
@@ -851,6 +881,7 @@ export default function App() {
       name: importedFormationName,
       startTime: 0,
       duration: Math.max(50, Math.round(template.duration || 170)),
+      transitionToNextSeconds: clampTransitionSeconds(template.transitionToNextSeconds ?? DEFAULT_FORMATION_TRANSITION_SECONDS),
       notes: `Imported from ${template.projectTitle}`,
       dancers: importedPositions
     };
@@ -860,6 +891,7 @@ export default function App() {
     }
     setFormations([...formations, importedFormation]);
     setSelectedFormationId(importedFormation.id);
+    setSelectedTransitionDividerIndex(formations.length > 0 ? formations.length - 1 : null);
     setPreviousFormationId(selectedFormationId);
     setSelectedDancerIds(new Set());
     setShowSearchDropdown(false);
@@ -1261,7 +1293,10 @@ export default function App() {
     const currentIndex = formations.findIndex(f => f.id === selectedFormationId);
     const nextIndex = formations.findIndex(f => f.id === id);
 
-    const shouldAnimate = nextIndex === currentIndex + 1 && formationTransitionMs > 0;
+    const transitionMs = nextIndex === currentIndex + 1
+      ? getTransitionMsForDivider(currentIndex)
+      : 0;
+    const shouldAnimate = nextIndex === currentIndex + 1 && transitionMs > 0;
 
     // Only animate if clicking the directly next formation
     if (shouldAnimate) {
@@ -1336,7 +1371,7 @@ export default function App() {
         setAnimateDancerTransitions(false);
         setDancerAnimations([]);
         transitionClearTimeoutRef.current = null;
-      }, formationTransitionMs);
+      }, transitionMs);
     } else {
       // Not adjacent or going backwards - just switch
       if (transitionClearTimeoutRef.current !== null) {
@@ -1473,7 +1508,7 @@ export default function App() {
         const start = ((leftPx - 40) / (containerWidth - 40)) * duration;
         const segmentDuration = (formation.duration / (containerWidth - 40)) * duration;
         const end = start + segmentDuration;
-        return { formation, start, end, segmentDuration };
+        return { formation, index, start, end, segmentDuration };
       });
     }
 
@@ -1481,12 +1516,12 @@ export default function App() {
     const totalUnits = formations.reduce((sum, f) => sum + f.duration, 0);
     const safeTotalUnits = totalUnits > 0 ? totalUnits : 1;
     let cursor = 0;
-    return formations.map((formation) => {
+    return formations.map((formation, index) => {
       const start = (cursor / safeTotalUnits) * duration;
       const segmentDuration = (formation.duration / safeTotalUnits) * duration;
       const end = start + segmentDuration;
       cursor += formation.duration;
-      return { formation, start, end, segmentDuration };
+      return { formation, index, start, end, segmentDuration };
     });
   };
 
@@ -1517,7 +1552,8 @@ export default function App() {
     }
 
     const localTime = Math.max(0, time - current.start);
-    const transitionDuration = Math.min(formationTransitionSeconds, current.segmentDuration);
+    const transitionSeconds = getTransitionSecondsForDivider(previous.index);
+    const transitionDuration = Math.min(transitionSeconds, current.segmentDuration);
     if (transitionDuration <= 0 || localTime >= transitionDuration) {
       return current.formation.dancers.map((pos) => ({ dancerId: pos.dancerId, x: pos.x, y: pos.y, opacity: 1 }));
     }
@@ -2045,6 +2081,24 @@ export default function App() {
     setFormationDurationById(selectedFormationId, current.duration + delta);
   };
 
+  const setTransitionForDivider = (dividerIndex: number, nextSeconds: number) => {
+    if (dividerIndex < 0 || dividerIndex >= formations.length - 1) return;
+    const clamped = clampTransitionSeconds(nextSeconds);
+    const current = getTransitionSecondsForDivider(dividerIndex);
+    if (current === clamped) return;
+    pushUndoSnapshot();
+    setFormations((prevFormations) => prevFormations.map((formation, index) => (
+      index === dividerIndex
+        ? { ...formation, transitionToNextSeconds: clamped }
+        : formation
+    )));
+  };
+
+  const adjustSelectedTransitionDivider = (delta: number) => {
+    if (!selectedTransitionDividerIsValid) return;
+    setTransitionForDivider(selectedTransitionDividerIndex as number, selectedTransitionSeconds + delta);
+  };
+
   const handleResizeStart = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     const formation = formations.find(f => f.id === id);
@@ -2203,6 +2257,15 @@ export default function App() {
   }, [selectedFormation]);
 
   useEffect(() => {
+    setSelectedTransitionDividerIndex((current) => {
+      if (current == null) return current;
+      const maxDividerIndex = formations.length - 2;
+      if (maxDividerIndex < 0) return null;
+      return Math.max(0, Math.min(current, maxDividerIndex));
+    });
+  }, [formations.length]);
+
+  useEffect(() => {
     if (showHomeScreen) return;
 
     const dancerById = new Map(dancers.map((dancer) => [dancer.id, dancer]));
@@ -2230,6 +2293,7 @@ export default function App() {
         formationId: formation.id,
         formationName: formation.name,
         duration: formation.duration,
+        transitionToNextSeconds: clampTransitionSeconds(formation.transitionToNextSeconds ?? DEFAULT_FORMATION_TRANSITION_SECONDS),
         dancerCount: savedDancers.length,
         dancers: savedDancers,
         updatedAt: now
@@ -2241,7 +2305,8 @@ export default function App() {
       projectTitle: normalizedProjectTitle,
       updatedAt: now,
       formations: savedFormations,
-      transitionSeconds: formationTransitionSeconds
+      // Legacy project-level transition value retained for backwards compatibility.
+      transitionSeconds: DEFAULT_FORMATION_TRANSITION_SECONDS
     };
 
     setProjectLibrary((prevProjects) => {
@@ -2256,7 +2321,7 @@ export default function App() {
       }
       return nextProjects;
     });
-  }, [showHomeScreen, currentProjectId, projectTitle, formations, dancers, safeStageWidth, safeStageHeight, formationTransitionSeconds]);
+  }, [showHomeScreen, currentProjectId, projectTitle, formations, dancers, safeStageWidth, safeStageHeight]);
 
   // Close people dropdown when clicking outside
   useEffect(() => {
@@ -2388,7 +2453,15 @@ export default function App() {
         handleFormationClick(timeline[newIndex].formation.id);
       }
     };
-  }, [formations, timelineContainerWidth, timelineDuration, selectedFormationId, formationTransitionMs]);
+  }, [formations, timelineContainerWidth, timelineDuration, selectedFormationId]);
+
+  const activeTransitionMs = (() => {
+    if (!isAnimating || !previousFormationId || !selectedFormationId) return 0;
+    const previousIndex = formations.findIndex((formation) => formation.id === previousFormationId);
+    const selectedIndex = formations.findIndex((formation) => formation.id === selectedFormationId);
+    if (previousIndex < 0 || selectedIndex !== previousIndex + 1) return 0;
+    return getTransitionMsForDivider(previousIndex);
+  })();
 
   const renderedStageDancers = isAnimating
     ? dancerAnimations.map((animation) => {
@@ -2732,10 +2805,18 @@ export default function App() {
           )}
           <div className="flex items-center gap-1 mr-1">
             <span className="text-[#999] text-[12px] uppercase tracking-wide">transition</span>
+            <span className="text-[#888] text-[11px] max-w-[170px] truncate" title={selectedTransitionLabel}>
+              {selectedTransitionLabel}
+            </span>
             <button
-              className="w-5 h-5 rounded border border-[#444] text-[#999] hover:bg-[#333] transition-colors flex items-center justify-center"
-              onClick={() => setFormationTransitionSeconds((prev) => clampTransitionSeconds(prev - 0.25))}
-              title="Shorten transition animation"
+              className={`w-5 h-5 rounded border text-[#999] transition-colors flex items-center justify-center ${
+                selectedTransitionDividerIsValid
+                  ? 'border-[#444] hover:bg-[#333]'
+                  : 'border-[#333] opacity-50 cursor-not-allowed'
+              }`}
+              onClick={() => adjustSelectedTransitionDivider(-0.25)}
+              disabled={!selectedTransitionDividerIsValid}
+              title={selectedTransitionDividerIsValid ? 'Shorten selected divider transition' : 'Select a timeline divider first'}
             >
               <Minus size={10} />
             </button>
@@ -2744,21 +2825,29 @@ export default function App() {
               min={MIN_FORMATION_TRANSITION_SECONDS}
               max={MAX_FORMATION_TRANSITION_SECONDS}
               step={0.25}
-              value={formationTransitionSeconds}
+              value={selectedTransitionDividerIsValid ? selectedTransitionSeconds : ''}
+              placeholder="--"
+              disabled={!selectedTransitionDividerIsValid}
               onChange={(e) => {
+                if (e.target.value === '') return;
                 const next = Number(e.target.value);
-                if (Number.isFinite(next)) {
-                  setFormationTransitionSeconds(clampTransitionSeconds(next));
+                if (Number.isFinite(next) && selectedTransitionDividerIsValid) {
+                  setTransitionForDivider(selectedTransitionDividerIndex as number, next);
                 }
               }}
               className="w-[54px] bg-[#1d1d1d] border border-[#444] rounded text-[#b4b1b1] text-[12px] px-1.5 py-0.5 text-center outline-none focus:border-[#8b72be]"
-              title="Transition animation seconds"
+              title={selectedTransitionDividerIsValid ? 'Transition seconds for selected divider' : 'Select a divider between formations'}
             />
             <span className="text-[#999] text-[12px]">s</span>
             <button
-              className="w-5 h-5 rounded border border-[#444] text-[#999] hover:bg-[#333] transition-colors flex items-center justify-center"
-              onClick={() => setFormationTransitionSeconds((prev) => clampTransitionSeconds(prev + 0.25))}
-              title="Lengthen transition animation"
+              className={`w-5 h-5 rounded border text-[#999] transition-colors flex items-center justify-center ${
+                selectedTransitionDividerIsValid
+                  ? 'border-[#444] hover:bg-[#333]'
+                  : 'border-[#333] opacity-50 cursor-not-allowed'
+              }`}
+              onClick={() => adjustSelectedTransitionDivider(0.25)}
+              disabled={!selectedTransitionDividerIsValid}
+              title={selectedTransitionDividerIsValid ? 'Lengthen selected divider transition' : 'Select a timeline divider first'}
             >
               <Plus size={10} />
             </button>
@@ -2900,7 +2989,7 @@ export default function App() {
                       transform: 'translate(-50%, -50%)',
                       opacity,
                       backgroundColor: dancer.color,
-                      transitionDuration: useTransition ? `${formationTransitionMs}ms` : undefined
+                      transitionDuration: useTransition ? `${activeTransitionMs}ms` : undefined
                     }}
                     onMouseDown={(e) => handleDancerDragStart(e, dancerId)}
                   >
@@ -3017,47 +3106,83 @@ export default function App() {
                 : leftPx;
               const translateX = isDragged ? draggedLeft - leftPx : 0;
 
+              const hasNextFormation = index < formations.length - 1;
+              const dividerLeftPx = leftPx + formation.duration;
+              const dividerSeconds = getTransitionSecondsForDivider(index);
+              const isSelectedDivider = selectedDividerIndex === index;
+
               return (
-                <div
-                  key={formation.id}
-                  className={`absolute bg-[rgba(139,114,190,0.2)] border border-[#8b72be] rounded-[5px] flex items-center justify-center cursor-pointer ${
-                    selectedFormationId === formation.id ? 'ring-2 ring-[#8b72be]' : ''
-                  } ${isDragged ? 'shadow-[0_8px_24px_rgba(0,0,0,0.35)]' : ''}`}
-                  style={{
-                    left: `${leftPx}px`,
-                    top: `calc(50% - ${TIMELINE_BLOCK_HEIGHT / 2}px)`,
-                    width: `${formation.duration}px`,
-                    height: `${TIMELINE_BLOCK_HEIGHT}px`,
-                    transform: `translateX(${translateX}px)`,
-                    zIndex: isDragged ? 15 : 1,
-                    opacity: isDragged ? 0.92 : 1
-                  }}
-                  onMouseDown={(e) => handleFormationReorderStart(e, formation.id)}
-                  onClick={() => handleFormationClick(formation.id)}
-                  onDoubleClick={() => handleFormationDoubleClick(formation.id)}
-                  onContextMenu={(e) => handleFormationContextMenu(e, formation.id)}
-                >
-                  {editingFormationId === formation.id ? (
-                    <input
-                      autoFocus
-                      type="text"
-                      className="bg-transparent text-white text-[13px] text-center w-full outline-none"
-                      value={formation.name}
-                      onChange={(e) => handleFormationNameChange(formation.id, e.target.value)}
-                      onBlur={handleFormationNameBlur}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleFormationNameBlur();
-                      }}
-                    />
-                  ) : (
-                    <span className="text-white text-[13px]">{formation.name}</span>
-                  )}
-                  
-                  {/* Resize handle */}
+                <div key={formation.id}>
                   <div
-                    className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-[#8b72be] transition-colors"
-                    onMouseDown={(e) => handleResizeStart(e, formation.id)}
-                  />
+                    className={`absolute bg-[rgba(139,114,190,0.2)] border border-[#8b72be] rounded-[5px] flex items-center justify-center cursor-pointer ${
+                      selectedFormationId === formation.id ? 'ring-2 ring-[#8b72be]' : ''
+                    } ${isDragged ? 'shadow-[0_8px_24px_rgba(0,0,0,0.35)]' : ''}`}
+                    style={{
+                      left: `${leftPx}px`,
+                      top: `calc(50% - ${TIMELINE_BLOCK_HEIGHT / 2}px)`,
+                      width: `${formation.duration}px`,
+                      height: `${TIMELINE_BLOCK_HEIGHT}px`,
+                      transform: `translateX(${translateX}px)`,
+                      zIndex: isDragged ? 15 : 1,
+                      opacity: isDragged ? 0.92 : 1
+                    }}
+                    onMouseDown={(e) => handleFormationReorderStart(e, formation.id)}
+                    onClick={() => handleFormationClick(formation.id)}
+                    onDoubleClick={() => handleFormationDoubleClick(formation.id)}
+                    onContextMenu={(e) => handleFormationContextMenu(e, formation.id)}
+                  >
+                    {editingFormationId === formation.id ? (
+                      <input
+                        autoFocus
+                        type="text"
+                        className="bg-transparent text-white text-[13px] text-center w-full outline-none"
+                        value={formation.name}
+                        onChange={(e) => handleFormationNameChange(formation.id, e.target.value)}
+                        onBlur={handleFormationNameBlur}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleFormationNameBlur();
+                        }}
+                      />
+                    ) : (
+                      <span className="text-white text-[13px]">{formation.name}</span>
+                    )}
+                    
+                    {/* Resize handle */}
+                    <div
+                      className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-[#8b72be] transition-colors"
+                      onMouseDown={(e) => handleResizeStart(e, formation.id)}
+                    />
+                  </div>
+
+                  {hasNextFormation && (
+                    <>
+                      <div
+                        className={`absolute top-[calc(50%-26px)] h-[52px] w-[2px] pointer-events-none ${
+                          isSelectedDivider ? 'bg-[#e0d6ff]' : 'bg-[#8b72be]'
+                        }`}
+                        style={{ left: `${dividerLeftPx}px`, zIndex: 18, opacity: isSelectedDivider ? 1 : 0.75 }}
+                      />
+                      <button
+                        className={`absolute -translate-x-1/2 h-[18px] min-w-[34px] px-1 rounded text-[10px] font-medium border transition-colors ${
+                          isSelectedDivider
+                            ? 'bg-[#8b72be] border-[#d8ccff] text-white'
+                            : 'bg-[#2a2a2a] border-[#4a3f67] text-[#cbbcf0] hover:bg-[#3a3350]'
+                        }`}
+                        style={{
+                          left: `${dividerLeftPx}px`,
+                          top: `calc(50% + ${TIMELINE_BLOCK_HEIGHT / 2 + 5}px)`,
+                          zIndex: 19
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedTransitionDividerIndex(index);
+                        }}
+                        title={`Set transition between ${formation.name} and ${formations[index + 1].name}`}
+                      >
+                        {formatTransitionSeconds(dividerSeconds)}s
+                      </button>
+                    </>
+                  )}
                 </div>
               );
             })}
@@ -3268,7 +3393,7 @@ export default function App() {
                 <ul className="list-disc pl-5 space-y-1">
                   <li>Click a formation name to select it; double-click its name on the timeline to rename it.</li>
                   <li>Adjust formation length using the <span className="text-white font-medium">length - / +</span> controls in the top bar.</li>
-                  <li>Adjust movement speed between formations using the <span className="text-white font-medium">transition</span> control (for example, set it to 5s for slower travel).</li>
+                  <li>Click a divider badge between two formation blocks (for example <span className="text-white font-medium">1s</span>), then use the top-bar <span className="text-white font-medium">transition</span> controls to set that specific transition time (for example, 5s).</li>
                   <li>You can also drag a formation block&apos;s right edge in the timeline to resize its duration.</li>
                   <li>Use the top-right <span className="text-white font-medium">Settings</span> button to change stage size, ratio, and grid lines.</li>
                   <li>Use the <span className="text-white font-medium">Search</span> button to browse formation thumbnails from previous projects by dancer count, then drag a thumbnail to the stage to import it.</li>
