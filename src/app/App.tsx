@@ -315,6 +315,7 @@ export default function App() {
   const [previousFormationId, setPreviousFormationId] = useState<string | null>(null);
   const [dancerAnimations, setDancerAnimations] = useState<DancerAnimation[]>([]);
   const [isAnimating, setIsAnimating] = useState(false);
+  const [animateDancerTransitions, setAnimateDancerTransitions] = useState(false);
   const [editingFormationId, setEditingFormationId] = useState<string | null>(null);
   const [editingNotes, setEditingNotes] = useState(false);
   const [draggedFormation, setDraggedFormation] = useState<{ id: string; startX: number; startDuration: number } | null>(null);
@@ -1006,17 +1007,10 @@ export default function App() {
     setRemovalDialog(null);
   };
 
-  // Calculate the nearest stage edge for a dancer position
+  // Calculate the nearest horizontal stage edge for a dancer position
   const getNearestEdge = (x: number, y: number) => {
-    const distances = {
-      left: x,
-      right: safeStageWidth - x,
-      top: y,
-      bottom: safeStageHeight - y
-    };
-    return Object.entries(distances).reduce((a, b) => 
-      distances[a[0] as keyof typeof distances] < distances[b[0] as keyof typeof distances] ? a : b
-    )[0] as 'left' | 'right' | 'top' | 'bottom';
+    void y;
+    return x <= safeStageWidth / 2 ? 'left' : 'right';
   };
 
   // Get exit position based on nearest edge
@@ -1113,12 +1107,15 @@ export default function App() {
       // Start animation
       setDancerAnimations(animations);
       setIsAnimating(true);
+      setAnimateDancerTransitions(false);
       setPreviousFormationId(selectedFormationId);
       setSelectedFormationId(id);
+      requestAnimationFrame(() => setAnimateDancerTransitions(true));
 
       // Clear animation state after transition
       setTimeout(() => {
         setIsAnimating(false);
+        setAnimateDancerTransitions(false);
         setDancerAnimations([]);
       }, 1000);
     } else {
@@ -2050,6 +2047,56 @@ export default function App() {
     };
   }, [formations, timelineContainerWidth, timelineDuration, selectedFormationId]);
 
+  const renderedStageDancers = isAnimating
+    ? dancerAnimations.map((animation) => {
+        const dancer = dancers.find((d) => d.id === animation.dancerId);
+        if (!dancer) return null;
+
+        return {
+          key: `${animation.type}-${animation.dancerId}`,
+          dancer,
+          dancerId: animation.dancerId,
+          x: animateDancerTransitions ? animation.endX : animation.startX,
+          y: animateDancerTransitions ? animation.endY : animation.startY,
+          opacity: animation.type === 'exit' ? (animateDancerTransitions ? 0 : 1) : 1,
+          isSelected: selectedDancerIds.has(animation.dancerId),
+          useTransition: true
+        };
+      }).filter((value): value is {
+        key: string;
+        dancer: Dancer;
+        dancerId: string;
+        x: number;
+        y: number;
+        opacity: number;
+        isSelected: boolean;
+        useTransition: boolean;
+      } => value !== null)
+    : selectedFormation?.dancers.map((dancerPos) => {
+        const dancer = dancers.find((d) => d.id === dancerPos.dancerId);
+        if (!dancer) return null;
+
+        return {
+          key: dancerPos.dancerId,
+          dancer,
+          dancerId: dancer.id,
+          x: dancerPos.x,
+          y: dancerPos.y,
+          opacity: 1,
+          isSelected: selectedDancerIds.has(dancer.id),
+          useTransition: false
+        };
+      }).filter((value): value is {
+        key: string;
+        dancer: Dancer;
+        dancerId: string;
+        x: number;
+        y: number;
+        opacity: number;
+        isSelected: boolean;
+        useTransition: boolean;
+      } => value !== null) ?? [];
+
   // Track timeline container width
   useEffect(() => {
     if (!timelineRef.current) return;
@@ -2443,54 +2490,24 @@ export default function App() {
                 ))}
                 
                 {/* Dancers */}
-                {selectedFormation.dancers.map(dancerPos => {
-                  const dancer = dancers.find(d => d.id === dancerPos.dancerId);
-                  if (!dancer) return null;
-                  const isSelected = selectedDancerIds.has(dancer.id);
-                  
-                  // Check if this dancer has an animation
-                  const animation = dancerAnimations.find(a => a.dancerId === dancerPos.dancerId);
-                  
-                  if (animation && isAnimating) {
-                    // During animation, use animation positions
-                    return (
-                      <div
-                        key={dancerPos.dancerId}
-                        className={`dancer-circle absolute w-[50px] h-[50px] rounded-full flex items-center justify-center text-white text-[18px] font-medium cursor-move select-none transition-all duration-1000 ease-in-out ${
-                          isSelected ? 'ring-4 ring-white' : ''
-                        }`}
-                        style={{
-                          left: `${animation.endX}px`,
-                          top: `${animation.endY}px`,
-                          transform: 'translate(-50%, -50%)',
-                          opacity: animation.type === 'exit' ? 0 : 1,
-                          backgroundColor: dancer.color
-                        }}
-                        onMouseDown={(e) => handleDancerDragStart(e, dancer.id)}
-                      >
-                        {getDancerInitials(dancer)}
-                      </div>
-                    );
-                  }
-                  
-                  return (
-                    <div
-                      key={dancerPos.dancerId}
-                      className={`dancer-circle absolute w-[50px] h-[50px] rounded-full flex items-center justify-center text-white text-[18px] font-medium cursor-move select-none ${
-                        isSelected ? 'ring-4 ring-white' : ''
-                      }`}
-                      style={{
-                        left: `${dancerPos.x}px`,
-                        top: `${dancerPos.y}px`,
-                        transform: 'translate(-50%, -50%)',
-                        backgroundColor: dancer.color
-                      }}
-                      onMouseDown={(e) => handleDancerDragStart(e, dancer.id)}
-                    >
-                      {getDancerInitials(dancer)}
-                    </div>
-                  );
-                })}
+                {renderedStageDancers.map(({ key, dancer, dancerId, x, y, opacity, isSelected, useTransition }) => (
+                  <div
+                    key={key}
+                    className={`dancer-circle absolute w-[50px] h-[50px] rounded-full flex items-center justify-center text-white text-[18px] font-medium cursor-move select-none ${
+                      useTransition ? 'transition-all duration-1000 ease-in-out' : ''
+                    } ${isSelected ? 'ring-4 ring-white' : ''}`}
+                    style={{
+                      left: `${x}px`,
+                      top: `${y}px`,
+                      transform: 'translate(-50%, -50%)',
+                      opacity,
+                      backgroundColor: dancer.color
+                    }}
+                    onMouseDown={(e) => handleDancerDragStart(e, dancerId)}
+                  >
+                    {getDancerInitials(dancer)}
+                  </div>
+                ))}
 
                 {selectionBox && (
                   <div
@@ -2503,28 +2520,6 @@ export default function App() {
                     }}
                   />
                 )}
-                
-                {/* Render entering dancers during animation */}
-                {isAnimating && dancerAnimations.filter(a => a.type === 'enter').map(animation => {
-                  const dancer = dancers.find(d => d.id === animation.dancerId);
-                  if (!dancer) return null;
-                  
-                  return (
-                    <div
-                      key={animation.dancerId}
-                      className="absolute w-[50px] h-[50px] rounded-full flex items-center justify-center text-white text-[18px] font-medium transition-all duration-1000 ease-in-out"
-                      style={{
-                        left: `${animation.endX}px`,
-                        top: `${animation.endY}px`,
-                        transform: 'translate(-50%, -50%)',
-                        opacity: 1,
-                        backgroundColor: dancer.color
-                      }}
-                    >
-                      {getDancerInitials(dancer)}
-                    </div>
-                  );
-                })}
               </div>
 
               {/* Notes Box */}
