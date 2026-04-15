@@ -106,6 +106,7 @@ interface ProjectLibraryRecord {
   projectTitle: string;
   updatedAt: number;
   formations: LibraryFormationTemplate[];
+  transitionSeconds?: number;
 }
 
 // Home Screen Component
@@ -292,6 +293,9 @@ const STAGE_MAX_HEIGHT = 1000;
 const GRID_MIN_LINES = 1;
 const GRID_MAX_LINES = 16;
 const STAGE_DRAG_THRESHOLD = 4;
+const DEFAULT_FORMATION_TRANSITION_SECONDS = 1;
+const MIN_FORMATION_TRANSITION_SECONDS = 0;
+const MAX_FORMATION_TRANSITION_SECONDS = 20;
 const TIMELINE_BLOCK_HEIGHT = 39;
 const PROJECT_LIBRARY_STORAGE_KEY = 'formation-station-project-library-v1';
 const PROJECT_LIBRARY_MAX_PROJECTS = 30;
@@ -351,6 +355,7 @@ export default function App() {
   const [showAudioUpload, setShowAudioUpload] = useState(false);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioDuration, setAudioDuration] = useState<number | null>(null);
+  const [formationTransitionSeconds, setFormationTransitionSeconds] = useState(DEFAULT_FORMATION_TRANSITION_SECONDS);
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [timelineContainerWidth, setTimelineContainerWidth] = useState(0);
   const [currentProjectId, setCurrentProjectId] = useState(() => createProjectId());
@@ -392,15 +397,21 @@ export default function App() {
   const formationReorderMovedRef = useRef(false);
   const formationReorderUndoPushedRef = useRef(false);
   const suppressFormationClickRef = useRef(false);
+  const transitionClearTimeoutRef = useRef<number | null>(null);
 
   const selectedFormation = formations.find(f => f.id === selectedFormationId);
 
   const clampStageWidth = (value: number) => Math.max(STAGE_MIN_WIDTH, Math.min(STAGE_MAX_WIDTH, Math.round(value)));
   const clampStageHeight = (value: number) => Math.max(STAGE_MIN_HEIGHT, Math.min(STAGE_MAX_HEIGHT, Math.round(value)));
   const clampGridLines = (value: number) => Math.max(GRID_MIN_LINES, Math.min(GRID_MAX_LINES, Math.round(value)));
+  const clampTransitionSeconds = (value: number) => Math.max(
+    MIN_FORMATION_TRANSITION_SECONDS,
+    Math.min(MAX_FORMATION_TRANSITION_SECONDS, Math.round(value * 100) / 100)
+  );
 
   const safeStageWidth = Math.max(1, stageConfig.width);
   const safeStageHeight = Math.max(1, stageConfig.height);
+  const formationTransitionMs = Math.round(formationTransitionSeconds * 1000);
 
   const getStageCoordinates = (clientX: number, clientY: number) => {
     const rect = stageRef.current?.getBoundingClientRect();
@@ -571,6 +582,7 @@ export default function App() {
     setAudioFile(null);
     setAudioDuration(null);
     audioBufferRef.current = null;
+    setFormationTransitionSeconds(DEFAULT_FORMATION_TRANSITION_SECONDS);
     setIsPlaying(false);
     setIsRecording(false);
     setRecordStatus(null);
@@ -649,6 +661,7 @@ export default function App() {
     setAudioFile(null);
     setAudioDuration(null);
     audioBufferRef.current = null;
+    setFormationTransitionSeconds(clampTransitionSeconds(record.transitionSeconds ?? DEFAULT_FORMATION_TRANSITION_SECONDS));
     setIsPlaying(false);
     setIsRecording(false);
     setRecordStatus(null);
@@ -1248,8 +1261,10 @@ export default function App() {
     const currentIndex = formations.findIndex(f => f.id === selectedFormationId);
     const nextIndex = formations.findIndex(f => f.id === id);
 
+    const shouldAnimate = nextIndex === currentIndex + 1 && formationTransitionMs > 0;
+
     // Only animate if clicking the directly next formation
-    if (nextIndex === currentIndex + 1) {
+    if (shouldAnimate) {
       const animations: DancerAnimation[] = [];
       
       // Get dancer IDs in current and next formations
@@ -1313,13 +1328,24 @@ export default function App() {
       requestAnimationFrame(() => setAnimateDancerTransitions(true));
 
       // Clear animation state after transition
-      setTimeout(() => {
+      if (transitionClearTimeoutRef.current !== null) {
+        window.clearTimeout(transitionClearTimeoutRef.current);
+      }
+      transitionClearTimeoutRef.current = window.setTimeout(() => {
         setIsAnimating(false);
         setAnimateDancerTransitions(false);
         setDancerAnimations([]);
-      }, 1000);
+        transitionClearTimeoutRef.current = null;
+      }, formationTransitionMs);
     } else {
       // Not adjacent or going backwards - just switch
+      if (transitionClearTimeoutRef.current !== null) {
+        window.clearTimeout(transitionClearTimeoutRef.current);
+        transitionClearTimeoutRef.current = null;
+      }
+      setIsAnimating(false);
+      setAnimateDancerTransitions(false);
+      setDancerAnimations([]);
       setPreviousFormationId(selectedFormationId);
       setSelectedFormationId(id);
     }
@@ -1491,8 +1517,8 @@ export default function App() {
     }
 
     const localTime = Math.max(0, time - current.start);
-    const transitionDuration = Math.min(1, current.segmentDuration);
-    if (localTime >= transitionDuration) {
+    const transitionDuration = Math.min(formationTransitionSeconds, current.segmentDuration);
+    if (transitionDuration <= 0 || localTime >= transitionDuration) {
       return current.formation.dancers.map((pos) => ({ dancerId: pos.dancerId, x: pos.x, y: pos.y, opacity: 1 }));
     }
 
@@ -2214,7 +2240,8 @@ export default function App() {
       projectId: currentProjectId,
       projectTitle: normalizedProjectTitle,
       updatedAt: now,
-      formations: savedFormations
+      formations: savedFormations,
+      transitionSeconds: formationTransitionSeconds
     };
 
     setProjectLibrary((prevProjects) => {
@@ -2229,7 +2256,7 @@ export default function App() {
       }
       return nextProjects;
     });
-  }, [showHomeScreen, currentProjectId, projectTitle, formations, dancers, safeStageWidth, safeStageHeight]);
+  }, [showHomeScreen, currentProjectId, projectTitle, formations, dancers, safeStageWidth, safeStageHeight, formationTransitionSeconds]);
 
   // Close people dropdown when clicking outside
   useEffect(() => {
@@ -2344,6 +2371,10 @@ export default function App() {
     return () => {
       stopPlayback();
       stopRecording();
+      if (transitionClearTimeoutRef.current !== null) {
+        window.clearTimeout(transitionClearTimeoutRef.current);
+        transitionClearTimeoutRef.current = null;
+      }
     };
   }, []);
 
@@ -2357,7 +2388,7 @@ export default function App() {
         handleFormationClick(timeline[newIndex].formation.id);
       }
     };
-  }, [formations, timelineContainerWidth, timelineDuration, selectedFormationId]);
+  }, [formations, timelineContainerWidth, timelineDuration, selectedFormationId, formationTransitionMs]);
 
   const renderedStageDancers = isAnimating
     ? dancerAnimations.map((animation) => {
@@ -2699,6 +2730,39 @@ export default function App() {
               </button>
             </div>
           )}
+          <div className="flex items-center gap-1 mr-1">
+            <span className="text-[#999] text-[12px] uppercase tracking-wide">transition</span>
+            <button
+              className="w-5 h-5 rounded border border-[#444] text-[#999] hover:bg-[#333] transition-colors flex items-center justify-center"
+              onClick={() => setFormationTransitionSeconds((prev) => clampTransitionSeconds(prev - 0.25))}
+              title="Shorten transition animation"
+            >
+              <Minus size={10} />
+            </button>
+            <input
+              type="number"
+              min={MIN_FORMATION_TRANSITION_SECONDS}
+              max={MAX_FORMATION_TRANSITION_SECONDS}
+              step={0.25}
+              value={formationTransitionSeconds}
+              onChange={(e) => {
+                const next = Number(e.target.value);
+                if (Number.isFinite(next)) {
+                  setFormationTransitionSeconds(clampTransitionSeconds(next));
+                }
+              }}
+              className="w-[54px] bg-[#1d1d1d] border border-[#444] rounded text-[#b4b1b1] text-[12px] px-1.5 py-0.5 text-center outline-none focus:border-[#8b72be]"
+              title="Transition animation seconds"
+            />
+            <span className="text-[#999] text-[12px]">s</span>
+            <button
+              className="w-5 h-5 rounded border border-[#444] text-[#999] hover:bg-[#333] transition-colors flex items-center justify-center"
+              onClick={() => setFormationTransitionSeconds((prev) => clampTransitionSeconds(prev + 0.25))}
+              title="Lengthen transition animation"
+            >
+              <Plus size={10} />
+            </button>
+          </div>
           {recordStatus && (
             <span className={`text-[12px] max-w-[300px] truncate ${isRecording ? 'text-[#e03535]' : 'text-[#999]'}`}>
               {recordStatus}
@@ -2828,14 +2892,15 @@ export default function App() {
                   <div
                     key={key}
                     className={`dancer-circle absolute w-[50px] h-[50px] rounded-full flex items-center justify-center text-white text-[18px] font-medium cursor-move select-none ${
-                      useTransition ? 'transition-all duration-1000 ease-in-out' : ''
+                      useTransition ? 'transition-all ease-in-out' : ''
                     } ${isSelected ? 'ring-4 ring-white' : ''}`}
                     style={{
                       left: `${x}px`,
                       top: `${y}px`,
                       transform: 'translate(-50%, -50%)',
                       opacity,
-                      backgroundColor: dancer.color
+                      backgroundColor: dancer.color,
+                      transitionDuration: useTransition ? `${formationTransitionMs}ms` : undefined
                     }}
                     onMouseDown={(e) => handleDancerDragStart(e, dancerId)}
                   >
@@ -3203,6 +3268,7 @@ export default function App() {
                 <ul className="list-disc pl-5 space-y-1">
                   <li>Click a formation name to select it; double-click its name on the timeline to rename it.</li>
                   <li>Adjust formation length using the <span className="text-white font-medium">length - / +</span> controls in the top bar.</li>
+                  <li>Adjust movement speed between formations using the <span className="text-white font-medium">transition</span> control (for example, set it to 5s for slower travel).</li>
                   <li>You can also drag a formation block&apos;s right edge in the timeline to resize its duration.</li>
                   <li>Use the top-right <span className="text-white font-medium">Settings</span> button to change stage size, ratio, and grid lines.</li>
                   <li>Use the <span className="text-white font-medium">Search</span> button to browse formation thumbnails from previous projects by dancer count, then drag a thumbnail to the stage to import it.</li>
