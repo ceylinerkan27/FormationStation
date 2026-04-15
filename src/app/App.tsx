@@ -128,6 +128,7 @@ interface LibraryFormationTemplate {
   dancerCount: number;
   dancers: LibraryFormationDancer[];
   transitionPaths?: Record<string, StoredDancerPath>;
+  notes?: string;
   updatedAt: number;
 }
 
@@ -137,6 +138,8 @@ interface ProjectLibraryRecord {
   updatedAt: number;
   formations: LibraryFormationTemplate[];
   transitionSeconds?: number;
+  audioFileName?: string;
+  audioData?: string;
 }
 
 // Home Screen Component
@@ -328,7 +331,13 @@ const MIN_FORMATION_TRANSITION_SECONDS = 0;
 const MAX_FORMATION_TRANSITION_SECONDS = 20;
 const TIMELINE_BLOCK_HEIGHT = 39;
 const PROJECT_LIBRARY_STORAGE_KEY = 'formation-station-project-library-v1';
+const LAST_OPEN_PROJECT_KEY = 'formation-station-last-open-project';
 const PROJECT_LIBRARY_MAX_PROJECTS = 30;
+
+// Captured synchronously at module load time, before any React effects can clear it.
+const INITIAL_LAST_OPEN_PROJECT_ID = (() => {
+  try { return window.localStorage.getItem(LAST_OPEN_PROJECT_KEY); } catch { return null; }
+})();
 const FORMATION_LIBRARY_DRAG_TYPE = 'application/x-formation-library-template';
 const PEOPLE_DANCER_DRAG_TYPE = 'application/x-formation-station-dancer';
 const PATH_HANDLE_HIT_RADIUS = 10;
@@ -408,7 +417,10 @@ export default function App() {
   const [playheadTime, setPlayheadTime] = useState(0);
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const audioBufferRef = useRef<AudioBuffer | null>(null);
+  const audioDataRef = useRef<string | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const stageAreaRef = useRef<HTMLDivElement>(null);
+  const [stageScale, setStageScale] = useState(1);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const playStartWallRef = useRef(0);
   const playStartHeadRef = useRef(0);
@@ -485,8 +497,8 @@ export default function App() {
     if (!rect) return null;
 
     return {
-      x: Math.max(0, Math.min(safeStageWidth, clientX - rect.left)),
-      y: Math.max(0, Math.min(safeStageHeight, clientY - rect.top))
+      x: Math.max(0, Math.min(safeStageWidth, (clientX - rect.left) / stageScale)),
+      y: Math.max(0, Math.min(safeStageHeight, (clientY - rect.top) / stageScale))
     };
   };
 
@@ -794,6 +806,7 @@ export default function App() {
     setAudioFile(null);
     setAudioDuration(null);
     audioBufferRef.current = null;
+    audioDataRef.current = null;
     setSelectedTransitionDividerIndex(null);
     setIsPlaying(false);
     setIsRecording(false);
@@ -838,7 +851,7 @@ export default function App() {
       startTime: 0,
       duration: template.duration,
       transitionToNextSeconds: clampTransitionSeconds(template.transitionToNextSeconds ?? record.transitionSeconds ?? DEFAULT_FORMATION_TRANSITION_SECONDS),
-      notes: '',
+      notes: template.notes ?? '',
       dancers: template.dancers.map((d) => ({
         dancerId: d.sourceDancerId,
         x: d.xRatio * DEFAULT_STAGE_CONFIG.width,
@@ -888,6 +901,7 @@ export default function App() {
     setAudioFile(null);
     setAudioDuration(null);
     audioBufferRef.current = null;
+    audioDataRef.current = null;
     setSelectedTransitionDividerIndex(null);
     setIsPlaying(false);
     setIsRecording(false);
@@ -903,6 +917,31 @@ export default function App() {
     setSearchQuery('');
     setDraggedLibraryFormationId(null);
     setIsStageLibraryDragOver(false);
+
+    // Restore audio if saved with the project
+    if (record.audioData && record.audioFileName) {
+      const savedAudioData = record.audioData;
+      const savedAudioFileName = record.audioFileName;
+      (async () => {
+        try {
+          const binaryString = atob(savedAudioData);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          const audioCtx = new AudioContext();
+          const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
+          audioBufferRef.current = audioBuffer;
+          audioCtx.close();
+          const file = new File([bytes], savedAudioFileName);
+          audioDataRef.current = savedAudioData;
+          setAudioFile(file);
+          setAudioDuration(audioBuffer.duration);
+        } catch {
+          // ignore errors restoring audio
+        }
+      })();
+    }
   };
 
   const handleDeleteProject = (projectId: string) => {
@@ -1754,13 +1793,22 @@ export default function App() {
     try {
       const arrayBuffer = await file.arrayBuffer();
       const audioCtx = new AudioContext();
-      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
       setAudioDuration(audioBuffer.duration);
       audioBufferRef.current = audioBuffer;
       audioCtx.close();
+      // Convert to base64 for persistence
+      const uint8 = new Uint8Array(arrayBuffer);
+      const CHUNK = 8192;
+      let binary = '';
+      for (let i = 0; i < uint8.length; i += CHUNK) {
+        binary += String.fromCharCode(...uint8.subarray(i, i + CHUNK));
+      }
+      audioDataRef.current = btoa(binary);
     } catch {
       setAudioDuration(null);
       audioBufferRef.current = null;
+      audioDataRef.current = null;
     }
     setAudioFile(file);
     setShowAudioUpload(false);
@@ -2633,6 +2681,7 @@ export default function App() {
         formationName: formation.name,
         duration: formation.duration,
         transitionToNextSeconds: clampTransitionSeconds(formation.transitionToNextSeconds ?? DEFAULT_FORMATION_TRANSITION_SECONDS),
+        notes: formation.notes,
         dancerCount: savedDancers.length,
         dancers: savedDancers,
         transitionPaths: formation.transitionPaths
@@ -2659,7 +2708,9 @@ export default function App() {
       updatedAt: now,
       formations: savedFormations,
       // Legacy project-level transition value retained for backwards compatibility.
-      transitionSeconds: DEFAULT_FORMATION_TRANSITION_SECONDS
+      transitionSeconds: DEFAULT_FORMATION_TRANSITION_SECONDS,
+      audioFileName: audioFile?.name,
+      audioData: audioDataRef.current ?? undefined,
     };
 
     setProjectLibrary((prevProjects) => {
@@ -2674,7 +2725,56 @@ export default function App() {
       }
       return nextProjects;
     });
-  }, [showHomeScreen, currentProjectId, projectTitle, formations, dancers, safeStageWidth, safeStageHeight]);
+  }, [showHomeScreen, currentProjectId, projectTitle, formations, dancers, safeStageWidth, safeStageHeight, audioFile]);
+
+  // Persist the last-open project ID so a page reload can reopen it
+  useEffect(() => {
+    try {
+      if (!showHomeScreen) {
+        window.localStorage.setItem(LAST_OPEN_PROJECT_KEY, currentProjectId);
+      } else {
+        window.localStorage.removeItem(LAST_OPEN_PROJECT_KEY);
+      }
+    } catch {}
+  }, [showHomeScreen, currentProjectId]);
+
+  // On mount, reopen the last project the user had open before a page reload.
+  // Uses INITIAL_LAST_OPEN_PROJECT_ID captured at module load time so the save
+  // effect (which clears the key when showHomeScreen=true) can't race against it.
+  useEffect(() => {
+    if (!INITIAL_LAST_OPEN_PROJECT_ID) return;
+    const record = projectLibrary.find((p) => p.projectId === INITIAL_LAST_OPEN_PROJECT_ID);
+    if (record) handleOpenExistingProject(record);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Scale the stage to fit the available screen area
+  useEffect(() => {
+    const compute = () => {
+      // Known fixed chrome heights: top bar (67px) + toolbar (56px) + timeline (150px)
+      const chromeH = 67 + 56 + 150;
+      const containerH = window.innerHeight - chromeH;
+      // Left panel is absolutely positioned (280px) but sits over the stage area,
+      // so we only subtract it from width when it's open.
+      const containerW = window.innerWidth - (isPanelOpen ? 281 : 0);
+
+      // Vertical overhead inside the stage area: p-8 padding (32*2), formation
+      // name label (~28px), audience label (~32px), two gap-6 gaps (24*2).
+      const vertOverhead = 32 * 2 + 28 + 32 + 24 * 2;
+      // Horizontal overhead: p-8 padding (32*2), notes box + gap (250+24).
+      const notesAndGap = 250 + 24;
+      const horizOverhead = 32 * 2;
+
+      const scaleW = (containerW - horizOverhead) / (safeStageWidth + notesAndGap);
+      const scaleH = (containerH - vertOverhead) / safeStageHeight;
+      const scale = Math.min(scaleW, scaleH, 1);
+      setStageScale(Math.max(0.15, scale));
+    };
+
+    compute();
+    window.addEventListener('resize', compute);
+    return () => window.removeEventListener('resize', compute);
+  }, [safeStageWidth, safeStageHeight, isPanelOpen, showHomeScreen]);
 
   // Close people dropdown when clicking outside
   useEffect(() => {
@@ -3378,13 +3478,29 @@ export default function App() {
 
         {/* Stage Area */}
         {formations.length > 0 && selectedFormation && (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 gap-6">
+          <div ref={stageAreaRef} className="flex-1 flex flex-col items-center justify-center p-8 gap-6 overflow-hidden">
             {/* Formation Name Above Stage */}
-            <div>
+            <div className="flex-shrink-0">
               <span className="text-[#b4b1b1] text-[20px] font-bold tracking-[0.52px]">{selectedFormation.name}</span>
             </div>
 
-            {/* Stage with Notes */}
+            {/* Stage with Notes — scaled wrapper */}
+            <div
+              className="flex-shrink-0 relative"
+              style={{
+                width: (safeStageWidth + 274) * stageScale,
+                height: safeStageHeight * stageScale,
+              }}
+            >
+              <div
+                style={{
+                  transform: `scale(${stageScale})`,
+                  transformOrigin: 'top left',
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                }}
+              >
             <div className="flex gap-6 items-start">
               <div
                 ref={stageRef}
@@ -3538,8 +3654,10 @@ export default function App() {
                 )}
               </div>
             </div>
+              </div>
+            </div>
 
-            <div>
+            <div className="flex-shrink-0">
               <span className="text-[#8b8b8b] text-[24px] tracking-wider">AUDIENCE</span>
             </div>
           </div>
@@ -3713,7 +3831,7 @@ export default function App() {
                 )}
                 <button
                   className="text-[#888] hover:text-white transition-colors flex-shrink-0"
-                  onClick={() => { stopPlayback(); setPlayheadTime(0); setAudioFile(null); setAudioDuration(null); audioBufferRef.current = null; }}
+                  onClick={() => { stopPlayback(); setPlayheadTime(0); setAudioFile(null); setAudioDuration(null); audioBufferRef.current = null; audioDataRef.current = null; }}
                 >
                   <X size={12} />
                 </button>
