@@ -914,6 +914,16 @@ export default function App() {
     const coords = getStageCoordinates(e.clientX, e.clientY);
     if (!coords) return;
 
+    // Treat clicks within an expanded hit radius of any dancer as dancer clicks
+    const DANCER_HIT_RADIUS = 35;
+    const nearDancerPos = selectedFormation?.dancers.find(
+      (d) => Math.hypot(d.x - coords.x, d.y - coords.y) <= DANCER_HIT_RADIUS
+    );
+    if (nearDancerPos) {
+      handleDancerDragStart(e, nearDancerPos.dancerId);
+      return;
+    }
+
     setSelectionBox({
       startX: coords.x,
       startY: coords.y,
@@ -1145,6 +1155,7 @@ export default function App() {
     if (!currentFormation || !nextFormation) {
       setSelectedFormationId(id);
       setPreviousFormationId(selectedFormationId);
+      setSelectedDancerIds(new Set());
       return;
     }
 
@@ -1226,6 +1237,7 @@ export default function App() {
       setPreviousFormationId(selectedFormationId);
       setSelectedFormationId(id);
     }
+    setSelectedDancerIds(new Set());
   };
 
   const handleSelectionBoxMove = (e: MouseEvent) => {
@@ -1859,6 +1871,10 @@ export default function App() {
     }
     pushUndoSnapshot();
     setFormations(newFormations);
+    if (newFormations.length === 0) {
+      setDancers([]);
+      setSelectedDancerIds(new Set());
+    }
     setSelectedFormationId((currentSelectedId) => {
       if (currentSelectedId && newFormations.some((f) => f.id === currentSelectedId)) {
         return currentSelectedId;
@@ -2188,10 +2204,37 @@ export default function App() {
 
       if (showHelpDialog || showSettingsDialog) return;
 
-      if (!isTypingTarget && e.key === 'Delete' && selectedFormationId && !formationDeleteDialog) {
+      const isDeleteKey = e.key === 'Delete' || e.key === 'Backspace';
+
+      // Confirm formation deletion when dialog is open
+      if (!isTypingTarget && formationDeleteDialog && (isDeleteKey || e.key === 'Enter')) {
         e.preventDefault();
-        openFormationDeleteDialog(selectedFormationId);
+        executeDeleteFormation(formationDeleteDialog.formationId);
         return;
+      }
+
+      // Confirm dancer removal when dialog is open
+      if (!isTypingTarget && removalDialog && (isDeleteKey || e.key === 'Enter')) {
+        e.preventDefault();
+        handleRemoveDancer('this');
+        return;
+      }
+
+      if (!isTypingTarget && isDeleteKey) {
+        // Delete selected dancers first (if any are selected in the current formation)
+        if (selectedDancerIds.size > 0 && selectedFormationId && !removalDialog) {
+          e.preventDefault();
+          const firstId = Array.from(selectedDancerIds)[0];
+          const dancer = dancers.find(d => d.id === firstId);
+          if (dancer) setRemovalDialog({ dancerId: dancer.id, dancerName: dancer.name });
+          return;
+        }
+        // Otherwise open formation delete dialog
+        if (selectedFormationId && !formationDeleteDialog) {
+          e.preventDefault();
+          openFormationDeleteDialog(selectedFormationId);
+          return;
+        }
       }
 
       const isUndo = (e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'z';
@@ -2203,7 +2246,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedFormationId, formationDeleteDialog, showHelpDialog, showSettingsDialog]);
+  }, [selectedFormationId, selectedDancerIds, dancers, formationDeleteDialog, removalDialog, showHelpDialog, showSettingsDialog]);
 
   // Keep playheadTimeRef in sync for drag handlers
   useEffect(() => { playheadTimeRef.current = playheadTime; }, [playheadTime]);
