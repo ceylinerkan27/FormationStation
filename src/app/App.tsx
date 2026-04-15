@@ -109,171 +109,163 @@ interface ProjectLibraryRecord {
 }
 
 // Home Screen Component
-function HomeScreen({ onOpenProject }: { onOpenProject: () => void }) {
+function HomeScreen({
+  projects,
+  onNewProject,
+  onOpenProject,
+  onDeleteProject,
+  onRenameProject,
+}: {
+  projects: ProjectLibraryRecord[];
+  onNewProject: () => void;
+  onOpenProject: (record: ProjectLibraryRecord) => void;
+  onDeleteProject: (projectId: string) => void;
+  onRenameProject: (projectId: string, newTitle: string) => void;
+}) {
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
+  const startRename = (record: ProjectLibraryRecord, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRenamingId(record.projectId);
+    setRenameValue(record.projectTitle);
+  };
+
+  const commitRename = () => {
+    if (renamingId && renameValue.trim()) {
+      onRenameProject(renamingId, renameValue.trim());
+    }
+    setRenamingId(null);
+  };
+
+  const formatDate = (ts: number) => {
+    return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
   return (
     <div className="size-full flex flex-col bg-[#1d1d1d] overflow-auto">
-      {/* Top Purple Bar */}
-      <div className="h-[67px] bg-[#8b72be] flex items-center justify-center px-6 relative">
-        <h1 className="text-white text-[24px] font-normal">Formation Station</h1>
+      {/* Header */}
+      <div className="flex-shrink-0 px-10 pt-14 pb-10">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-1.5 h-10 rounded-full bg-[#8b72be]" />
+          <h1 className="text-white text-[38px] font-semibold tracking-tight">Formation Station</h1>
+        </div>
+        <p className="text-[#8b8b8b] text-[15px] pl-5">Choreograph your vision</p>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col items-center justify-start p-8 gap-10">
-        {/* Hello World Heading */}
-        <h2 className="text-[#b4b1b1] text-[48px] font-bold tracking-wider">hello world</h2>
+      {/* Divider */}
+      <div className="mx-10 h-px bg-[#3a3a3a] flex-shrink-0" />
 
-        {/* Colors Section */}
-        <div className="w-full max-w-4xl">
-          <h3 className="text-[#8b8b8b] text-[20px] font-bold tracking-[0.52px] mb-4">Project Colors</h3>
-          <div className="flex flex-wrap gap-4">
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-16 h-16 rounded-[8px] bg-[#8b72be] border border-[#3a3a3a]" />
-              <span className="text-[#888] text-[12px]">#8b72be</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-16 h-16 rounded-[8px] bg-[#1d1d1d] border border-[#3a3a3a]" />
-              <span className="text-[#888] text-[12px]">#1d1d1d</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-16 h-16 rounded-[8px] bg-[#252525] border border-[#3a3a3a]" />
-              <span className="text-[#888] text-[12px]">#252525</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-16 h-16 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a]" />
-              <span className="text-[#888] text-[12px]">#2a2a2a</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-16 h-16 rounded-[8px] bg-[#2e2e2e] border border-[#3a3a3a]" />
-              <span className="text-[#888] text-[12px]">#2e2e2e</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-16 h-16 rounded-[8px] bg-[#3a3a3a] border border-[#3a3a3a]" />
-              <span className="text-[#888] text-[12px]">#3a3a3a</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-16 h-16 rounded-[8px] bg-[#b4b1b1] border border-[#3a3a3a]" />
-              <span className="text-[#888] text-[12px]">#b4b1b1</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-16 h-16 rounded-[8px] bg-[#8b8b8b] border border-[#3a3a3a]" />
-              <span className="text-[#888] text-[12px]">#8b8b8b</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-16 h-16 rounded-[8px] bg-[#e03535] border border-[#3a3a3a]" />
-              <span className="text-[#888] text-[12px]">#e03535</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-16 h-16 rounded-[8px] bg-[#ffffff] border border-[#3a3a3a]" />
-              <span className="text-[#888] text-[12px]">#ffffff</span>
-            </div>
-          </div>
+      {/* Projects Section */}
+      <div className="flex-1 px-10 py-8">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-[#b4b1b1] text-[11px] uppercase tracking-[2px] font-semibold">Projects</h2>
+          <span className="text-[#888] text-[12px]">{projects.length} project{projects.length !== 1 ? 's' : ''}</span>
         </div>
 
-        {/* Fonts Section */}
-        <div className="w-full max-w-4xl">
-          <h3 className="text-[#8b8b8b] text-[20px] font-bold tracking-[0.52px] mb-4">Typography</h3>
-          <div className="flex flex-col gap-4">
-            <div className="bg-[#252525] rounded-[8px] p-4 border border-[#3a3a3a]">
-              <span className="text-[#888] text-[12px] mb-2 block">Heading 1 (24px)</span>
-              <p className="text-white text-[24px] font-normal">The quick brown fox jumps over the lazy dog</p>
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-4">
+          {/* New Project Card */}
+          <button
+            onClick={onNewProject}
+            className="group bg-[#252525] border-2 border-dashed border-[#3a3a3a] hover:border-[#8b72be] hover:bg-[#2a2a2a] rounded-[12px] p-6 flex flex-col items-center justify-center gap-3 transition-all min-h-[152px] cursor-pointer"
+          >
+            <div className="w-10 h-10 rounded-full bg-[#2e2e2e] group-hover:bg-[#8b72be] flex items-center justify-center transition-colors">
+              <Plus size={20} className="text-[#888] group-hover:text-white transition-colors" />
             </div>
-            <div className="bg-[#252525] rounded-[8px] p-4 border border-[#3a3a3a]">
-              <span className="text-[#888] text-[12px] mb-2 block">Heading 2 (20px Bold)</span>
-              <p className="text-[#b4b1b1] text-[20px] font-bold tracking-[0.52px]">The quick brown fox jumps over the lazy dog</p>
+            <span className="text-[#888] group-hover:text-[#b4b1b1] text-[14px] font-medium transition-colors">New Project</span>
+          </button>
+
+          {/* Existing Project Cards */}
+          {projects.map((record) => (
+            <div
+              key={record.projectId}
+              onClick={() => renamingId !== record.projectId && onOpenProject(record)}
+              className="group bg-[#252525] border border-[#3a3a3a] hover:border-[#8b72be] rounded-[12px] p-5 flex flex-col gap-3 transition-all cursor-pointer min-h-[152px]"
+            >
+              {/* Top row: badge + actions */}
+              <div className="flex items-center justify-between">
+                <span className="bg-[rgba(139,114,190,0.15)] text-[#8b72be] text-[11px] px-2.5 py-1 rounded-full font-medium">
+                  {record.formations.length} formation{record.formations.length !== 1 ? 's' : ''}
+                </span>
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={(e) => startRename(record, e)}
+                    className="w-7 h-7 flex items-center justify-center rounded-[6px] hover:bg-[#3a3a3a] transition-colors"
+                    title="Rename"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(record.projectId); }}
+                    className="w-7 h-7 flex items-center justify-center rounded-[6px] hover:bg-[#3a3a3a] transition-colors"
+                    title="Delete"
+                  >
+                    <Trash2 size={13} className="text-[#888] hover:text-[#e03535] transition-colors" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Title */}
+              {renamingId === record.projectId ? (
+                <input
+                  autoFocus
+                  className="bg-[#2a2a2a] border border-[#8b72be] text-white text-[15px] font-medium rounded-[6px] px-2 py-1 outline-none w-full"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setRenamingId(null); }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <h3 className="text-white text-[15px] font-medium leading-snug">{record.projectTitle}</h3>
+              )}
+
+              {/* Footer */}
+              <div className="mt-auto flex items-center gap-2">
+                <div className="flex -space-x-1">
+                  {Array.from(new Map(record.formations.flatMap(f => f.dancers).map(d => [d.sourceDancerId, d])).values()).slice(0, 5).map((d, i) => (
+                    <div key={i} className="w-4 h-4 rounded-full border border-[#252525] flex-shrink-0" style={{ backgroundColor: d.color }} />
+                  ))}
+                </div>
+                <p className="text-[#888] text-[11px] ml-auto">Edited {formatDate(record.updatedAt)}</p>
+              </div>
             </div>
-            <div className="bg-[#252525] rounded-[8px] p-4 border border-[#3a3a3a]">
-              <span className="text-[#888] text-[12px] mb-2 block">Body (18px)</span>
-              <p className="text-[#b4b1b1] text-[18px] leading-[19.5px] tracking-[0.52px]">The quick brown fox jumps over the lazy dog. This is body text used for notes and descriptions.</p>
-            </div>
-            <div className="bg-[#252525] rounded-[8px] p-4 border border-[#3a3a3a]">
-              <span className="text-[#888] text-[12px] mb-2 block">Small (13px)</span>
-              <p className="text-white text-[13px]">The quick brown fox jumps over the lazy dog</p>
-            </div>
-            <div className="bg-[#252525] rounded-[8px] p-4 border border-[#3a3a3a]">
-              <span className="text-[#888] text-[12px] mb-2 block">Label (12px)</span>
-              <p className="text-[#ccc] text-[12px]">The quick brown fox jumps over the lazy dog</p>
-            </div>
-          </div>
+          ))}
         </div>
 
-        {/* Icons Section */}
-        <div className="w-full max-w-4xl">
-          <h3 className="text-[#8b8b8b] text-[20px] font-bold tracking-[0.52px] mb-4">Icons (Lucide React)</h3>
-          <div className="flex flex-wrap gap-6">
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
-                <Home size={24} className="text-[#8b72be]" />
-              </div>
-              <span className="text-[#888] text-[12px]">Home</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
-                <Settings size={24} className="text-[#888]" />
-              </div>
-              <span className="text-[#888] text-[12px]">Settings</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
-                <Search size={24} className="text-[#888]" />
-              </div>
-              <span className="text-[#888] text-[12px]">Search</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
-                <Play size={24} className="text-[#888]" />
-              </div>
-              <span className="text-[#888] text-[12px]">Play</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
-                <User size={24} className="text-[#888]" />
-              </div>
-              <span className="text-[#888] text-[12px]">User</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
-                <Plus size={24} className="text-[#888]" />
-              </div>
-              <span className="text-[#888] text-[12px]">Plus</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
-                <Trash2 size={24} className="text-[#e03535]" />
-              </div>
-              <span className="text-[#888] text-[12px]">Trash</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
-                <Bold size={24} className="text-[#b4b1b1]" />
-              </div>
-              <span className="text-[#888] text-[12px]">Bold</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
-                <Italic size={24} className="text-[#b4b1b1]" />
-              </div>
-              <span className="text-[#888] text-[12px]">Italic</span>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-12 h-12 rounded-[8px] bg-[#2a2a2a] border border-[#3a3a3a] flex items-center justify-center">
-                <Underline size={24} className="text-[#b4b1b1]" />
-              </div>
-              <span className="text-[#888] text-[12px]">Underline</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Open Project Button */}
-        <button
-          onClick={onOpenProject}
-          className="mt-8 bg-[#8b72be] hover:bg-[#7a61ad] text-white px-8 py-4 rounded-[12px] text-[18px] font-medium transition-colors"
-        >
-          open new project
-        </button>
+        {projects.length === 0 && (
+          <p className="text-[#8b8b8b] text-[14px] mt-6">No saved projects yet. Create your first one.</p>
+        )}
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      {deleteConfirmId && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setDeleteConfirmId(null)}>
+          <div className="bg-[#2a2a2a] border border-[#3a3a3a] rounded-[12px] p-6 w-[320px]" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white text-[16px] font-medium mb-2">Delete project?</h3>
+            <p className="text-[#888] text-[14px] mb-5">This will remove the project from your list. This cannot be undone.</p>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setDeleteConfirmId(null)} className="px-4 py-2 rounded-[8px] text-[#888] hover:text-white text-[14px] transition-colors">
+                Cancel
+              </button>
+              <button
+                onClick={() => { onDeleteProject(deleteConfirmId); setDeleteConfirmId(null); }}
+                className="px-4 py-2 rounded-[8px] bg-[#e03535] hover:bg-[#c92f2f] text-white text-[14px] transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
 
 const DANCER_COLOR_PALETTE = [
   '#8b72be',
@@ -593,6 +585,100 @@ export default function App() {
     setSearchQuery('');
     setDraggedLibraryFormationId(null);
     setIsStageLibraryDragOver(false);
+  };
+
+  const handleOpenExistingProject = (record: ProjectLibraryRecord) => {
+    stopPlayback();
+    stopRecording();
+
+    // Reconstruct unique dancers (deduplicate by sourceDancerId)
+    const dancerMap = new Map<string, Dancer>();
+    record.formations.forEach((template) => {
+      template.dancers.forEach((d) => {
+        if (!dancerMap.has(d.sourceDancerId)) {
+          dancerMap.set(d.sourceDancerId, {
+            id: d.sourceDancerId,
+            name: d.name,
+            number: d.number,
+            color: d.color,
+          });
+        }
+      });
+    });
+    const reconstructedDancers = Array.from(dancerMap.values()).sort((a, b) => a.number - b.number);
+
+    // Reconstruct formations with absolute positions from stored ratios
+    const reconstructedFormations: Formation[] = record.formations.map((template) => ({
+      id: template.formationId,
+      name: template.formationName,
+      startTime: 0,
+      duration: template.duration,
+      notes: '',
+      dancers: template.dancers.map((d) => ({
+        dancerId: d.sourceDancerId,
+        x: d.xRatio * DEFAULT_STAGE_CONFIG.width,
+        y: d.yRatio * DEFAULT_STAGE_CONFIG.height,
+      })),
+    }));
+
+    setCurrentProjectId(record.projectId);
+    setShowHomeScreen(false);
+    setIsPanelOpen(false);
+    setIsPathEditMode(false);
+    setFormations(reconstructedFormations);
+    setSelectedFormationId(reconstructedFormations.length > 0 ? reconstructedFormations[0].id : null);
+    setPreviousFormationId(null);
+    setDancerAnimations([]);
+    setIsAnimating(false);
+    setEditingFormationId(null);
+    setEditingNotes(false);
+    setDraggedFormation(null);
+    setDancers(reconstructedDancers);
+    setSelectedDancerIds(new Set());
+    setDraggedDancer(null);
+    setSelectionBox(null);
+    setShowPeopleDropdown(false);
+    setRemovalDialog(null);
+    setProjectTitle(record.projectTitle);
+    setEditingProjectTitle(false);
+    setContextMenu(null);
+    setFormationDeleteDialog(null);
+    undoStackRef.current = [];
+    setUndoDepth(0);
+    setShowAudioUpload(false);
+    setAudioFile(null);
+    setAudioDuration(null);
+    audioBufferRef.current = null;
+    setIsPlaying(false);
+    setIsRecording(false);
+    setRecordStatus(null);
+    setPlayheadTime(0);
+    playheadTimeRef.current = 0;
+    setIsDraggingPlayhead(false);
+    setStageConfig(DEFAULT_STAGE_CONFIG);
+    setSettingsDraft(DEFAULT_STAGE_CONFIG);
+    setShowSettingsDialog(false);
+    setShowHelpDialog(false);
+    setShowSearchDropdown(false);
+    setSearchQuery('');
+    setDraggedLibraryFormationId(null);
+    setIsStageLibraryDragOver(false);
+  };
+
+  const handleDeleteProject = (projectId: string) => {
+    setProjectLibrary((prev) => {
+      const next = prev.filter((p) => p.projectId !== projectId);
+      try { window.localStorage.setItem(PROJECT_LIBRARY_STORAGE_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+
+  const handleRenameProject = (projectId: string, newTitle: string) => {
+    setProjectLibrary((prev) => {
+      const next = prev.map((p) => p.projectId === projectId ? { ...p, projectTitle: newTitle } : p);
+      try { window.localStorage.setItem(PROJECT_LIBRARY_STORAGE_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
   };
 
   // Timeline duration: use audio duration if available, else derive from formations or default
@@ -2091,6 +2177,8 @@ export default function App() {
   }, [selectedFormation]);
 
   useEffect(() => {
+    if (showHomeScreen) return;
+
     const dancerById = new Map(dancers.map((dancer) => [dancer.id, dancer]));
     const now = Date.now();
     const normalizedProjectTitle = projectTitle.trim() || 'Untitled Project';
@@ -2141,7 +2229,7 @@ export default function App() {
       }
       return nextProjects;
     });
-  }, [currentProjectId, projectTitle, formations, dancers, safeStageWidth, safeStageHeight]);
+  }, [showHomeScreen, currentProjectId, projectTitle, formations, dancers, safeStageWidth, safeStageHeight]);
 
   // Close people dropdown when clicking outside
   useEffect(() => {
@@ -2332,7 +2420,15 @@ export default function App() {
   }, [showHomeScreen]);
 
   if (showHomeScreen) {
-    return <HomeScreen onOpenProject={handleOpenNewProject} />;
+    return (
+      <HomeScreen
+        projects={projectLibrary}
+        onNewProject={handleOpenNewProject}
+        onOpenProject={handleOpenExistingProject}
+        onDeleteProject={handleDeleteProject}
+        onRenameProject={handleRenameProject}
+      />
+    );
   }
 
   return (
