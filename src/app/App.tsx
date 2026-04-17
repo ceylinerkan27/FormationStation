@@ -424,7 +424,8 @@ export default function App() {
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const playStartWallRef = useRef(0);
   const playStartHeadRef = useRef(0);
-  const animFrameRef = useRef(0);
+  const playbackFrameRef = useRef(0);
+  const transitionFrameRef = useRef(0);
   const manualTransitionStartRef = useRef(0);
   const manualTransitionDurationRef = useRef(0);
   const playSessionRef = useRef(0);
@@ -1698,18 +1699,18 @@ export default function App() {
         const progress = transitionMs <= 0 ? 1 : Math.min(1, elapsed / transitionMs);
         setManualTransitionProgress(progress);
         if (progress < 1) {
-          animFrameRef.current = requestAnimationFrame(transitionTick);
+          transitionFrameRef.current = requestAnimationFrame(transitionTick);
         }
       };
-      cancelAnimationFrame(animFrameRef.current);
-      animFrameRef.current = requestAnimationFrame(transitionTick);
+      cancelAnimationFrame(transitionFrameRef.current);
+      transitionFrameRef.current = requestAnimationFrame(transitionTick);
 
       // Clear animation state after transition
       if (transitionClearTimeoutRef.current !== null) {
         window.clearTimeout(transitionClearTimeoutRef.current);
       }
       transitionClearTimeoutRef.current = window.setTimeout(() => {
-        cancelAnimationFrame(animFrameRef.current);
+        cancelAnimationFrame(transitionFrameRef.current);
         setIsAnimating(false);
         setManualTransitionProgress(0);
         setDancerAnimations([]);
@@ -1721,7 +1722,7 @@ export default function App() {
         window.clearTimeout(transitionClearTimeoutRef.current);
         transitionClearTimeoutRef.current = null;
       }
-      cancelAnimationFrame(animFrameRef.current);
+      cancelAnimationFrame(transitionFrameRef.current);
       setIsAnimating(false);
       setManualTransitionProgress(0);
       setDancerAnimations([]);
@@ -1824,7 +1825,7 @@ export default function App() {
     audioSourceRef.current = null;
     audioContextRef.current?.close();
     audioContextRef.current = null;
-    cancelAnimationFrame(animFrameRef.current);
+    cancelAnimationFrame(playbackFrameRef.current);
     setIsPlaying(false);
   };
 
@@ -2255,7 +2256,7 @@ export default function App() {
       source.start(0, startFrom);
       audioSourceRef.current = source;
       source.onended = () => {
-        cancelAnimationFrame(animFrameRef.current);
+        cancelAnimationFrame(playbackFrameRef.current);
         setIsPlaying(false);
         setPlayheadTime(0);
       };
@@ -2274,14 +2275,14 @@ export default function App() {
       setPlayheadTime(newTime);
       checkFormationRef.current(newTime);
       if (newTime < timelineDuration) {
-        animFrameRef.current = requestAnimationFrame(tick);
+        playbackFrameRef.current = requestAnimationFrame(tick);
       } else {
-        cancelAnimationFrame(animFrameRef.current);
+        cancelAnimationFrame(playbackFrameRef.current);
         setIsPlaying(false);
         setPlayheadTime(0);
       }
     };
-    animFrameRef.current = requestAnimationFrame(tick);
+    playbackFrameRef.current = requestAnimationFrame(tick);
   };
 
   const handlePlayheadMouseDown = (e: React.MouseEvent) => {
@@ -2294,7 +2295,7 @@ export default function App() {
       audioSourceRef.current = null;
       audioContextRef.current?.close();
       audioContextRef.current = null;
-      cancelAnimationFrame(animFrameRef.current);
+      cancelAnimationFrame(playbackFrameRef.current);
     }
     setIsDraggingPlayhead(true);
   };
@@ -2329,7 +2330,7 @@ export default function App() {
           source.start(0, resumeFrom);
           audioSourceRef.current = source;
           source.onended = () => {
-            cancelAnimationFrame(animFrameRef.current);
+            cancelAnimationFrame(playbackFrameRef.current);
             setIsPlaying(false);
             setPlayheadTime(0);
           };
@@ -2346,14 +2347,14 @@ export default function App() {
           setPlayheadTime(newTime);
           checkFormationRef.current(newTime);
           if (newTime < timelineDuration) {
-            animFrameRef.current = requestAnimationFrame(tick);
+            playbackFrameRef.current = requestAnimationFrame(tick);
           } else {
-            cancelAnimationFrame(animFrameRef.current);
+            cancelAnimationFrame(playbackFrameRef.current);
             setIsPlaying(false);
             setPlayheadTime(0);
           }
         };
-        animFrameRef.current = requestAnimationFrame(tick);
+        playbackFrameRef.current = requestAnimationFrame(tick);
       }
     };
 
@@ -2889,6 +2890,7 @@ export default function App() {
     return () => {
       stopPlayback();
       stopRecording();
+      cancelAnimationFrame(transitionFrameRef.current);
       if (transitionClearTimeoutRef.current !== null) {
         window.clearTimeout(transitionClearTimeoutRef.current);
         transitionClearTimeoutRef.current = null;
