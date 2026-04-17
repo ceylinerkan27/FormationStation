@@ -142,6 +142,11 @@ interface ProjectLibraryRecord {
   audioData?: string;
 }
 
+interface QuickTutorialStep {
+  title: string;
+  description: string;
+}
+
 // Home Screen Component
 function HomeScreen({
   projects,
@@ -203,6 +208,7 @@ function HomeScreen({
           <button
             onClick={onNewProject}
             className="group bg-[#252525] border-2 border-dashed border-[#3a3a3a] hover:border-[#8b72be] hover:bg-[#2a2a2a] rounded-[12px] p-6 flex flex-col items-center justify-center gap-3 transition-all min-h-[152px] cursor-pointer"
+            title="Create a new choreography project"
           >
             <div className="w-10 h-10 rounded-full bg-[#2e2e2e] group-hover:bg-[#8b72be] flex items-center justify-center transition-colors">
               <Plus size={20} className="text-[#888] group-hover:text-white transition-colors" />
@@ -283,12 +289,17 @@ function HomeScreen({
             <h3 className="text-white text-[16px] font-medium mb-2">Delete project?</h3>
             <p className="text-[#888] text-[14px] mb-5">This will remove the project from your list. This cannot be undone.</p>
             <div className="flex gap-3 justify-end">
-              <button onClick={() => setDeleteConfirmId(null)} className="px-4 py-2 rounded-[8px] text-[#888] hover:text-white text-[14px] transition-colors">
+              <button
+                onClick={() => setDeleteConfirmId(null)}
+                className="px-4 py-2 rounded-[8px] text-[#888] hover:text-white text-[14px] transition-colors"
+                title="Cancel project deletion"
+              >
                 Cancel
               </button>
               <button
                 onClick={() => { onDeleteProject(deleteConfirmId); setDeleteConfirmId(null); }}
                 className="px-4 py-2 rounded-[8px] bg-[#e03535] hover:bg-[#c92f2f] text-white text-[14px] transition-colors"
+                title="Permanently delete this project"
               >
                 Delete
               </button>
@@ -332,11 +343,15 @@ const MAX_FORMATION_TRANSITION_SECONDS = 20;
 const TIMELINE_BLOCK_HEIGHT = 39;
 const PROJECT_LIBRARY_STORAGE_KEY = 'formation-station-project-library-v1';
 const LAST_OPEN_PROJECT_KEY = 'formation-station-last-open-project';
+const QUICK_TUTORIAL_SEEN_KEY = 'formation-station-quick-tutorial-seen-v1';
 const PROJECT_LIBRARY_MAX_PROJECTS = 30;
 
 // Captured synchronously at module load time, before any React effects can clear it.
 const INITIAL_LAST_OPEN_PROJECT_ID = (() => {
   try { return window.localStorage.getItem(LAST_OPEN_PROJECT_KEY); } catch { return null; }
+})();
+const INITIAL_QUICK_TUTORIAL_SEEN = (() => {
+  try { return window.localStorage.getItem(QUICK_TUTORIAL_SEEN_KEY) === '1'; } catch { return false; }
 })();
 const FORMATION_LIBRARY_DRAG_TYPE = 'application/x-formation-library-template';
 const PEOPLE_DANCER_DRAG_TYPE = 'application/x-formation-station-dancer';
@@ -347,6 +362,25 @@ const PATH_TYPE_OPTIONS: Array<{ id: PathType; label: string; description: strin
   { id: 'quadratic', label: '3-Point Curve', description: 'One draggable control point bends the path.' },
   { id: 'cubic', label: '4-Point Curve', description: 'Two draggable control points create a more complex curve.' },
   { id: 'l-shape', label: 'L-Shape', description: 'A sharp corner path with one draggable elbow.' }
+];
+
+const QUICK_TUTORIAL_STEPS: QuickTutorialStep[] = [
+  {
+    title: 'Build your timeline',
+    description: 'Use the + button in the Formation row to add formations, then click a block to select which one you are editing.'
+  },
+  {
+    title: 'Place and edit dancers',
+    description: 'Click empty stage space to add dancers, drag circles to move them, and use the People menu to rename, recolor, or add existing dancers.'
+  },
+  {
+    title: 'Shape transitions',
+    description: 'Use length and transition controls in the top bar to adjust timing, then enable Path Edit Mode to customize movement paths.'
+  },
+  {
+    title: 'Preview and export',
+    description: 'Press Play to preview, drag the red playhead to scrub, add audio in the Audio row, and use Record to export your run-through.'
+  }
 ];
 
 const createProjectId = () => `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -394,6 +428,13 @@ export default function App() {
   const [stageConfig, setStageConfig] = useState<StageConfig>(DEFAULT_STAGE_CONFIG);
   const [settingsDraft, setSettingsDraft] = useState<StageConfig>(DEFAULT_STAGE_CONFIG);
   const [showHelpDialog, setShowHelpDialog] = useState(false);
+  const [showQuickTutorial, setShowQuickTutorial] = useState(false);
+  const [quickTutorialStepIndex, setQuickTutorialStepIndex] = useState(0);
+  const quickTutorialHasBeenShownRef = useRef(INITIAL_QUICK_TUTORIAL_SEEN);
+  const [hoverTooltip, setHoverTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const tooltipTargetRef = useRef<HTMLElement | null>(null);
+  const tooltipBoxRef = useRef<HTMLDivElement | null>(null);
+  const tooltipSeenByScopeRef = useRef<Map<string, Set<string>>>(new Map());
   
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; formationId: string } | null>(null);
   const [formationDeleteDialog, setFormationDeleteDialog] = useState<{ formationId: string; formationName: string } | null>(null);
@@ -455,6 +496,12 @@ export default function App() {
   const activePathPreviewDancerId = selectedDancerIds.size === 1 ? Array.from(selectedDancerIds)[0] : null;
 
   const selectedFormation = formations.find(f => f.id === selectedFormationId);
+  const quickTutorialStep = QUICK_TUTORIAL_STEPS[quickTutorialStepIndex] ?? {
+    title: 'Quick Start',
+    description: 'Use the controls above to build formations, place dancers, and preview transitions.'
+  };
+  const isFirstQuickTutorialStep = quickTutorialStepIndex === 0;
+  const isLastQuickTutorialStep = quickTutorialStepIndex === QUICK_TUTORIAL_STEPS.length - 1;
 
   const clampStageWidth = (value: number) => Math.max(STAGE_MIN_WIDTH, Math.min(STAGE_MAX_WIDTH, Math.round(value)));
   const clampStageHeight = (value: number) => Math.max(STAGE_MIN_HEIGHT, Math.min(STAGE_MAX_HEIGHT, Math.round(value)));
@@ -701,6 +748,20 @@ export default function App() {
     setShowSettingsDialog(true);
   };
 
+  const openQuickTutorial = (force = false) => {
+    if (!force && quickTutorialHasBeenShownRef.current) return;
+    setQuickTutorialStepIndex(0);
+    setShowQuickTutorial(true);
+    if (!quickTutorialHasBeenShownRef.current) {
+      quickTutorialHasBeenShownRef.current = true;
+      try {
+        window.localStorage.setItem(QUICK_TUTORIAL_SEEN_KEY, '1');
+      } catch {
+        // Ignore storage errors and keep in-memory fallback.
+      }
+    }
+  };
+
   const applyRatioPresetToDraft = (ratioWidth: number, ratioHeight: number) => {
     setSettingsDraft((prev) => {
       const nextHeight = clampStageHeight((prev.width / ratioWidth) * ratioHeight);
@@ -819,10 +880,12 @@ export default function App() {
     setSettingsDraft(DEFAULT_STAGE_CONFIG);
     setShowSettingsDialog(false);
     setShowHelpDialog(false);
+    setShowQuickTutorial(false);
     setShowSearchDropdown(false);
     setSearchQuery('');
     setDraggedLibraryFormationId(null);
     setIsStageLibraryDragOver(false);
+    openQuickTutorial();
   };
 
   const handleOpenExistingProject = (record: ProjectLibraryRecord) => {
@@ -914,10 +977,12 @@ export default function App() {
     setSettingsDraft(DEFAULT_STAGE_CONFIG);
     setShowSettingsDialog(false);
     setShowHelpDialog(false);
+    setShowQuickTutorial(false);
     setShowSearchDropdown(false);
     setSearchQuery('');
     setDraggedLibraryFormationId(null);
     setIsStageLibraryDragOver(false);
+    openQuickTutorial();
 
     // Restore audio if saved with the project
     if (record.audioData && record.audioFileName) {
@@ -2826,6 +2891,10 @@ export default function App() {
       );
 
       if (e.key === 'Escape') {
+        if (showQuickTutorial) {
+          setShowQuickTutorial(false);
+          return;
+        }
         if (showSettingsDialog) {
           setShowSettingsDialog(false);
           return;
@@ -2836,7 +2905,7 @@ export default function App() {
         }
       }
 
-      if (showHelpDialog || showSettingsDialog) return;
+      if (showQuickTutorial || showHelpDialog || showSettingsDialog) return;
 
       const isDeleteKey = e.key === 'Delete' || e.key === 'Backspace';
 
@@ -2880,7 +2949,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedFormationId, selectedDancerIds, dancers, formationDeleteDialog, removalDialog, showHelpDialog, showSettingsDialog]);
+  }, [selectedFormationId, selectedDancerIds, dancers, formationDeleteDialog, removalDialog, showQuickTutorial, showHelpDialog, showSettingsDialog]);
 
   // Keep playheadTimeRef in sync for drag handlers
   useEffect(() => { playheadTimeRef.current = playheadTime; }, [playheadTime]);
@@ -3025,6 +3094,144 @@ export default function App() {
     return () => observer.disconnect();
   }, [showHomeScreen]);
 
+  // Custom tooltip renderer for environments where native title tooltips may not appear.
+  useEffect(() => {
+    const findTooltipElement = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return null;
+      return target.closest<HTMLElement>('[title]');
+    };
+
+    const getScopeKey = () => showHomeScreen ? '__home__' : currentProjectId;
+
+    const getSeenSetForScope = () => {
+      const scopeKey = getScopeKey();
+      const existing = tooltipSeenByScopeRef.current.get(scopeKey);
+      if (existing) return existing;
+      const created = new Set<string>();
+      tooltipSeenByScopeRef.current.set(scopeKey, created);
+      return created;
+    };
+
+    const clampTooltipPosition = (rawX: number, rawY: number) => {
+      const margin = 8;
+      const fallbackWidth = 260;
+      const fallbackHeight = 64;
+      const width = tooltipBoxRef.current?.offsetWidth ?? fallbackWidth;
+      const height = tooltipBoxRef.current?.offsetHeight ?? fallbackHeight;
+      return {
+        x: Math.max(margin, Math.min(rawX, window.innerWidth - width - margin)),
+        y: Math.max(margin, Math.min(rawY, window.innerHeight - height - margin))
+      };
+    };
+
+    const hideTooltip = () => {
+      tooltipTargetRef.current = null;
+      setHoverTooltip(null);
+    };
+
+    const showTooltipAtPointer = (element: HTMLElement, clientX: number, clientY: number) => {
+      const text = element.getAttribute('title');
+      if (!text) {
+        hideTooltip();
+        return;
+      }
+
+      const seenSet = getSeenSetForScope();
+      if (seenSet.has(text)) {
+        hideTooltip();
+        return;
+      }
+      seenSet.add(text);
+
+      tooltipTargetRef.current = element;
+      const nextPosition = clampTooltipPosition(clientX + 12, clientY + 16);
+      setHoverTooltip({
+        text,
+        x: nextPosition.x,
+        y: nextPosition.y
+      });
+    };
+
+    const handleMouseOver = (event: MouseEvent) => {
+      const element = findTooltipElement(event.target);
+      if (!element) {
+        hideTooltip();
+        return;
+      }
+      showTooltipAtPointer(element, event.clientX, event.clientY);
+    };
+
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!tooltipTargetRef.current) return;
+      setHoverTooltip((current) => {
+        if (!current) return current;
+        const nextPosition = clampTooltipPosition(event.clientX + 12, event.clientY + 16);
+        return {
+          ...current,
+          x: nextPosition.x,
+          y: nextPosition.y
+        };
+      });
+    };
+
+    const handleMouseOut = (event: MouseEvent) => {
+      const relatedElement = findTooltipElement(event.relatedTarget);
+      if (relatedElement) return;
+      hideTooltip();
+    };
+
+    const handleFocusIn = (event: FocusEvent) => {
+      const element = findTooltipElement(event.target);
+      if (!element) return;
+      const text = element.getAttribute('title');
+      if (!text) return;
+      const seenSet = getSeenSetForScope();
+      if (seenSet.has(text)) {
+        hideTooltip();
+        return;
+      }
+      seenSet.add(text);
+      const rect = element.getBoundingClientRect();
+      tooltipTargetRef.current = element;
+      const nextPosition = clampTooltipPosition(
+        rect.left + Math.min(rect.width * 0.5, 120),
+        rect.bottom + 12
+      );
+      setHoverTooltip({
+        text,
+        x: nextPosition.x,
+        y: nextPosition.y
+      });
+    };
+
+    const handleFocusOut = (event: FocusEvent) => {
+      const relatedElement = findTooltipElement(event.relatedTarget);
+      if (relatedElement) return;
+      hideTooltip();
+    };
+
+    const handleScroll = () => {
+      if (tooltipTargetRef.current) hideTooltip();
+    };
+
+    document.addEventListener('mouseover', handleMouseOver);
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseout', handleMouseOut);
+    document.addEventListener('focusin', handleFocusIn);
+    document.addEventListener('focusout', handleFocusOut);
+    window.addEventListener('scroll', handleScroll, true);
+
+    return () => {
+      hideTooltip();
+      document.removeEventListener('mouseover', handleMouseOver);
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseout', handleMouseOut);
+      document.removeEventListener('focusin', handleFocusIn);
+      document.removeEventListener('focusout', handleFocusOut);
+      window.removeEventListener('scroll', handleScroll, true);
+    };
+  }, [currentProjectId, showHomeScreen]);
+
   if (showHomeScreen) {
     return (
       <HomeScreen
@@ -3041,7 +3248,14 @@ export default function App() {
     <div className="size-full flex flex-col bg-[#1d1d1d] overflow-hidden">
       {/* Top Purple Bar */}
       <div className="h-[67px] bg-[#8b72be] flex items-center justify-center px-6 relative">
-        <button className="absolute left-6 text-white hover:opacity-80 transition-opacity" onClick={() => setShowHomeScreen(true)}>
+        <button
+          className="absolute left-6 text-white hover:opacity-80 transition-opacity"
+          onClick={() => {
+            setShowQuickTutorial(false);
+            setShowHomeScreen(true);
+          }}
+          title="Back to home screen"
+        >
           <Home size={24} />
         </button>
         {editingProjectTitle ? (
@@ -3060,6 +3274,7 @@ export default function App() {
           <h1 
             className="text-white text-[24px] font-normal cursor-pointer hover:opacity-80 transition-opacity"
             onDoubleClick={() => setEditingProjectTitle(true)}
+            title="Double-click to rename this project"
           >
             {projectTitle}
           </h1>
@@ -3075,7 +3290,7 @@ export default function App() {
           <button
             className="text-white hover:opacity-80 transition-opacity bg-[#6f58a0] border border-white/25 rounded-[9px] px-3 py-1.5 text-[13px] font-semibold tracking-wide"
             onClick={() => setShowHelpDialog(true)}
-            title="Open help"
+            title="Open full help guide"
           >
             Help
           </button>
@@ -3102,6 +3317,7 @@ export default function App() {
             <button 
               className="w-[44px] h-[40px] bg-[#2a2a2a] rounded-[10px] border border-[#3a3a3a] flex items-center justify-center hover:bg-[#333] transition-colors"
               onClick={() => setShowSearchDropdown(!showSearchDropdown)}
+              title="Search saved formations and import into this project"
             >
               <Search size={17} className="text-[#888888]" />
             </button>
@@ -3198,6 +3414,7 @@ export default function App() {
           <button
             className="w-[44px] h-[40px] bg-[#2a2a2a] rounded-[10px] border border-[#3a3a3a] flex items-center justify-center hover:bg-[#333] transition-colors"
             onClick={handlePlayPause}
+            title={isPlaying ? 'Pause playback preview' : 'Play choreography preview'}
           >
             {isPlaying
               ? <Pause size={17} className="text-[#888888]" fill="#888888" />
@@ -3208,6 +3425,7 @@ export default function App() {
             <button 
               className="w-[44px] h-[40px] bg-[#2a2a2a] rounded-[10px] border border-[#3a3a3a] flex items-center justify-center hover:bg-[#333] transition-colors"
               onClick={() => setShowPeopleDropdown(!showPeopleDropdown)}
+              title="Manage dancers: names, colors, and formation membership"
             >
               <User size={17} className="text-[#888888]" />
             </button>
@@ -3271,6 +3489,7 @@ export default function App() {
                         <button
                           className="w-5 h-5 flex items-center justify-center hover:bg-[#444] rounded transition-colors"
                           onClick={() => setRemovalDialog({ dancerId: dancer.id, dancerName: dancer.name })}
+                          title="Remove dancer from this formation or all formations"
                         >
                           <Minus size={12} className="text-[#888]" />
                         </button>
@@ -3369,6 +3588,7 @@ export default function App() {
             className={`w-[46px] h-[26px] rounded-[13px] relative transition-colors ${
               isPathEditMode ? 'bg-[#8b72be]' : 'bg-[#3a3a3a]'
             }`}
+            title={isPathEditMode ? 'Disable path editing' : 'Enable path editing for transitions'}
           >
             <div
               className={`absolute top-[3px] w-[20px] h-[20px] bg-white rounded-[10px] shadow-[0px_1px_3px_0px_rgba(0,0,0,0.4)] transition-all ${
@@ -3408,6 +3628,7 @@ export default function App() {
                         ? 'bg-[#3a3550] border-[#8b72be]'
                         : 'bg-[#2d2d2d] border-[#3a3a3a] hover:bg-[#333]'
                     }`}
+                    title={option.description}
                   >
                     <div className="text-white text-[13px] font-medium">{option.label}</div>
                     <div className="text-[#989898] text-[11px] leading-relaxed mt-1">{option.description}</div>
@@ -3471,6 +3692,7 @@ export default function App() {
           className={`absolute top-1/2 -translate-y-1/2 z-20 w-[22px] h-[64px] bg-[#2e2e2e] border border-[#3a3a3a] border-l-0 rounded-r-[8px] flex items-center justify-center hover:bg-[#333] transition-all shadow-[2px_0px_8px_0px_rgba(0,0,0,0.4)] ${
             isPanelOpen ? 'left-[280px]' : 'left-0'
           }`}
+          title={isPanelOpen ? 'Hide formations overview panel' : 'Show formations overview panel'}
         >
           <ChevronRight
             size={13}
@@ -3519,6 +3741,7 @@ export default function App() {
                 onDragOver={handleStageDragOver}
                 onDragLeave={handleStageDragLeave}
                 onDrop={handleStageDrop}
+                title={isPathEditMode ? 'Path edit mode: select a dancer to edit transition path handles.' : 'Click empty stage to add dancers. Drag dancers to reposition them.'}
               >
                 {/* Vertical gridlines */}
                 {Array.from({ length: stageConfig.verticalGridLines }, (_, idx) => idx + 1).map((line) => (
@@ -3579,6 +3802,7 @@ export default function App() {
                           transform: 'translate(-50%, -50%)'
                         }}
                         onMouseDown={(e) => handlePathHandleMouseDown(e, selectedPathEditDancer.dancerId, index)}
+                        title="Drag to adjust this transition control point"
                       />
                     ))}
 
@@ -3690,9 +3914,10 @@ export default function App() {
               <div
                 className="w-3 h-3 bg-[#e03535] rounded-full flex-shrink-0 cursor-ew-resize"
                 onMouseDown={handlePlayheadMouseDown}
+                title="Drag to scrub through time"
               />
               {/* Line */}
-              <div className="w-[2px] flex-1 bg-[#e03535] cursor-ew-resize" onMouseDown={handlePlayheadMouseDown} />
+              <div className="w-[2px] flex-1 bg-[#e03535] cursor-ew-resize" onMouseDown={handlePlayheadMouseDown} title="Drag to scrub through time" />
             </div>
           )}
 
@@ -3718,6 +3943,7 @@ export default function App() {
             <button 
               className="absolute left-2 top-1/2 -translate-y-1/2 w-6 h-6 bg-[#2a2a2a] border border-[#3a3a3a] rounded flex items-center justify-center hover:bg-[#333] transition-colors z-10"
               onClick={createNewFormation}
+              title="Add a new formation to the timeline"
             >
               <Plus size={16} className="text-[#888]" />
             </button>
@@ -3756,6 +3982,7 @@ export default function App() {
                     onClick={() => handleFormationClick(formation.id)}
                     onDoubleClick={() => handleFormationDoubleClick(formation.id)}
                     onContextMenu={(e) => handleFormationContextMenu(e, formation.id)}
+                    title="Click to select. Double-click to rename. Drag block to reorder."
                   >
                     {editingFormationId === formation.id ? (
                       <input
@@ -3777,6 +4004,7 @@ export default function App() {
                     <div
                       className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-[#8b72be] transition-colors"
                       onMouseDown={(e) => handleResizeStart(e, formation.id)}
+                      title="Drag to resize formation duration"
                     />
                   </div>
 
@@ -3819,6 +4047,7 @@ export default function App() {
             <button
               className="absolute left-2 top-1/2 -translate-y-1/2 w-6 h-6 bg-[#2a2a2a] border border-[#3a3a3a] rounded flex items-center justify-center hover:bg-[#333] transition-colors"
               onClick={() => setShowAudioUpload(true)}
+              title="Upload audio to sync with the timeline"
             >
               <Plus size={16} className="text-[#888]" />
             </button>
@@ -3834,6 +4063,7 @@ export default function App() {
                 <button
                   className="text-[#888] hover:text-white transition-colors flex-shrink-0"
                   onClick={() => { stopPlayback(); setPlayheadTime(0); setAudioFile(null); setAudioDuration(null); audioBufferRef.current = null; audioDataRef.current = null; }}
+                  title="Remove audio from this project"
                 >
                   <X size={12} />
                 </button>
@@ -3909,24 +4139,28 @@ export default function App() {
                   <button
                     className="px-3 py-1.5 rounded-[8px] bg-[#1d1d1d] border border-[#3a3a3a] hover:bg-[#333] text-white transition-colors"
                     onClick={() => applyRatioPresetToDraft(16, 9)}
+                    title="Set draft stage ratio to 16:9"
                   >
                     16:9
                   </button>
                   <button
                     className="px-3 py-1.5 rounded-[8px] bg-[#1d1d1d] border border-[#3a3a3a] hover:bg-[#333] text-white transition-colors"
                     onClick={() => applyRatioPresetToDraft(4, 3)}
+                    title="Set draft stage ratio to 4:3"
                   >
                     4:3
                   </button>
                   <button
                     className="px-3 py-1.5 rounded-[8px] bg-[#1d1d1d] border border-[#3a3a3a] hover:bg-[#333] text-white transition-colors"
                     onClick={() => applyRatioPresetToDraft(8, 5)}
+                    title="Set draft stage ratio to 8:5"
                   >
                     8:5
                   </button>
                   <button
                     className="px-3 py-1.5 rounded-[8px] bg-[#1d1d1d] border border-[#3a3a3a] hover:bg-[#333] text-white transition-colors"
                     onClick={() => applyRatioPresetToDraft(1, 1)}
+                    title="Set draft stage ratio to 1:1"
                   >
                     1:1
                   </button>
@@ -3973,15 +4207,102 @@ export default function App() {
               <button
                 onClick={() => setShowSettingsDialog(false)}
                 className="bg-[#1d1d1d] hover:bg-[#333] text-[#aaa] px-4 py-2 rounded-[8px] text-[14px] transition-colors"
+                title="Discard stage setting changes"
               >
                 Cancel
               </button>
               <button
                 onClick={applyStageSettings}
                 className="bg-[#8b72be] hover:bg-[#7b62ae] text-white px-4 py-2 rounded-[8px] text-[14px] transition-colors"
+                title="Apply stage setting changes"
               >
                 Apply
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Tutorial Dialog */}
+      {showQuickTutorial && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowQuickTutorial(false)}>
+          <div
+            className="bg-[#252525] border border-[#3a3a3a] rounded-[12px] w-[min(520px,calc(100%-32px))] max-h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[#3a3a3a]">
+              <div>
+                <p className="text-[#8b72be] text-[11px] uppercase tracking-[1.2px] font-semibold">Quick Start</p>
+                <h3 className="text-white text-[18px] font-semibold mt-1">{quickTutorialStep.title}</h3>
+              </div>
+              <button
+                onClick={() => setShowQuickTutorial(false)}
+                className="text-[#888] hover:text-white transition-colors"
+                title="Close quick tutorial"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-6 py-5">
+              <p className="text-[#d0d0d0] text-[14px] leading-relaxed">{quickTutorialStep.description}</p>
+              <p className="text-[#9a9a9a] text-[12px] mt-4">
+                Step {quickTutorialStepIndex + 1} of {QUICK_TUTORIAL_STEPS.length}
+              </p>
+              <div className="mt-2 flex items-center gap-1.5">
+                {QUICK_TUTORIAL_STEPS.map((step, index) => (
+                  <span
+                    key={step.title}
+                    className={`h-1.5 rounded-full transition-all ${
+                      index === quickTutorialStepIndex
+                        ? 'w-8 bg-[#8b72be]'
+                        : 'w-3 bg-[#4a4a4a]'
+                    }`}
+                  />
+                ))}
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-[#3a3a3a] flex items-center justify-between gap-3">
+              <button
+                className="bg-[#1d1d1d] hover:bg-[#333] text-[#d0d0d0] px-3 py-2 rounded-[8px] text-[13px] transition-colors"
+                onClick={() => {
+                  setShowQuickTutorial(false);
+                  setShowHelpDialog(true);
+                }}
+                title="Open the full help guide"
+              >
+                Open full help
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  className={`px-3 py-2 rounded-[8px] text-[13px] transition-colors ${
+                    isFirstQuickTutorialStep
+                      ? 'bg-[#232323] text-[#666] cursor-not-allowed'
+                      : 'bg-[#1d1d1d] hover:bg-[#333] text-[#d0d0d0]'
+                  }`}
+                  onClick={() => setQuickTutorialStepIndex((prev) => Math.max(0, prev - 1))}
+                  disabled={isFirstQuickTutorialStep}
+                  title="Go to previous tutorial step"
+                >
+                  Back
+                </button>
+                {isLastQuickTutorialStep ? (
+                  <button
+                    className="bg-[#8b72be] hover:bg-[#7b62ae] text-white px-4 py-2 rounded-[8px] text-[13px] transition-colors"
+                    onClick={() => setShowQuickTutorial(false)}
+                    title="Finish quick tutorial"
+                  >
+                    Done
+                  </button>
+                ) : (
+                  <button
+                    className="bg-[#8b72be] hover:bg-[#7b62ae] text-white px-4 py-2 rounded-[8px] text-[13px] transition-colors"
+                    onClick={() => setQuickTutorialStepIndex((prev) => Math.min(QUICK_TUTORIAL_STEPS.length - 1, prev + 1))}
+                    title="Go to next tutorial step"
+                  >
+                    Next
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -4084,8 +4405,20 @@ export default function App() {
                 </ul>
               </section>
             </div>
-            <div className="px-6 py-3 border-t border-[#3a3a3a] text-[#999] text-[12px]">
-              Press <span className="text-white">Esc</span> or click outside this panel to close.
+            <div className="px-6 py-3 border-t border-[#3a3a3a] flex items-center justify-between gap-3">
+              <button
+                className="text-[12px] text-[#c6c6c6] hover:text-white transition-colors"
+                onClick={() => {
+                  setShowHelpDialog(false);
+                  openQuickTutorial(true);
+                }}
+                title="Restart the quick tutorial"
+              >
+                Replay quick tutorial
+              </button>
+              <span className="text-[#999] text-[12px]">
+                Press <span className="text-white">Esc</span> or click outside this panel to close.
+              </span>
             </div>
           </div>
         </div>
@@ -4100,6 +4433,7 @@ export default function App() {
               <button 
                 onClick={() => setRemovalDialog(null)}
                 className="text-[#888] hover:text-white transition-colors"
+                title="Close removal dialog"
               >
                 <X size={18} />
               </button>
@@ -4108,6 +4442,7 @@ export default function App() {
               <button
                 onClick={() => handleRemoveDancer('all')}
                 className="bg-[#1d1d1d] hover:bg-[#333] text-white px-4 py-2.5 rounded-[8px] text-[14px] transition-colors"
+                title="Remove this dancer from all formations"
               >
                 All formations
               </button>
@@ -4115,12 +4450,14 @@ export default function App() {
                 onClick={() => handleRemoveDancer('this')}
                 className="bg-[#1d1d1d] hover:bg-[#333] text-white px-4 py-2.5 rounded-[8px] text-[14px] transition-colors"
                 disabled={!selectedFormationId}
+                title="Remove this dancer only from the selected formation"
               >
                 This formation only
               </button>
               <button
                 onClick={() => handleRemoveDancer('cancel')}
                 className="bg-[#1d1d1d] hover:bg-[#333] text-[#888] px-4 py-2.5 rounded-[8px] text-[14px] transition-colors"
+                title="Cancel dancer removal"
               >
                 Cancel
               </button>
@@ -4138,6 +4475,7 @@ export default function App() {
               <button
                 onClick={() => setFormationDeleteDialog(null)}
                 className="text-[#888] hover:text-white transition-colors"
+                title="Close formation delete dialog"
               >
                 <X size={18} />
               </button>
@@ -4149,12 +4487,14 @@ export default function App() {
               <button
                 onClick={() => setFormationDeleteDialog(null)}
                 className="bg-[#1d1d1d] hover:bg-[#333] text-[#999] px-4 py-2.5 rounded-[8px] text-[14px] transition-colors"
+                title="Cancel formation deletion"
               >
                 Cancel
               </button>
               <button
                 onClick={() => executeDeleteFormation(formationDeleteDialog.formationId)}
                 className="bg-[#e03535] hover:bg-[#c92f2f] text-white px-4 py-2.5 rounded-[8px] text-[14px] transition-colors"
+                title="Delete this formation from the timeline"
               >
                 Delete
               </button>
@@ -4169,7 +4509,11 @@ export default function App() {
           <div className="bg-[#2a2a2a] border border-[#3a3a3a] rounded-[12px] p-6 w-[380px]" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-5">
               <h3 className="text-white text-[16px] font-medium">Upload Audio</h3>
-              <button onClick={() => setShowAudioUpload(false)} className="text-[#888] hover:text-white transition-colors">
+              <button
+                onClick={() => setShowAudioUpload(false)}
+                className="text-[#888] hover:text-white transition-colors"
+                title="Close audio upload dialog"
+              >
                 <X size={18} />
               </button>
             </div>
@@ -4219,6 +4563,7 @@ export default function App() {
           <button
             className="w-full px-4 py-2 text-white hover:bg-[#333] transition-colors"
             onClick={() => openFormationDeleteDialog(contextMenu.formationId)}
+            title="Delete the selected formation"
           >
             Delete Formation
           </button>
@@ -4239,6 +4584,19 @@ export default function App() {
           className="w-full h-full"
         />
       </div>
+
+      {hoverTooltip && (
+        <div
+          ref={tooltipBoxRef}
+          className="fixed z-[120] pointer-events-none max-w-[260px] rounded-[8px] border border-[#4a3f67] bg-[#161616] px-2.5 py-1.5 text-[11px] leading-snug text-[#e7e1f7] shadow-[0_8px_22px_rgba(0,0,0,0.45)]"
+          style={{
+            left: `${hoverTooltip.x}px`,
+            top: `${hoverTooltip.y}px`
+          }}
+        >
+          {hoverTooltip.text}
+        </div>
+      )}
     </div>
   );
 }
