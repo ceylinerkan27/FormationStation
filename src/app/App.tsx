@@ -132,14 +132,25 @@ interface LibraryFormationTemplate {
   updatedAt: number;
 }
 
+interface AudioTrack {
+  id: string;
+  fileName: string;
+  duration: number;
+  audioData: string;
+  trimStart: number;
+  trimEnd: number;
+}
+
 interface ProjectLibraryRecord {
   projectId: string;
   projectTitle: string;
   updatedAt: number;
   formations: LibraryFormationTemplate[];
   transitionSeconds?: number;
+  // Legacy single-track fields kept for backwards-compat reads
   audioFileName?: string;
   audioData?: string;
+  audioTracks?: AudioTrack[];
 }
 
 interface QuickTutorialStep {
@@ -442,9 +453,15 @@ export default function App() {
   const [undoDepth, setUndoDepth] = useState(0);
 
   const [showAudioUpload, setShowAudioUpload] = useState(false);
-  const [audioFile, setAudioFile] = useState<File | null>(null);
-  const [audioDuration, setAudioDuration] = useState<number | null>(null);
+  const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
+  const [trimmingTrack, setTrimmingTrack] = useState<{
+    trackId: string; handle: 'start' | 'end';
+    startX: number; startValue: number;
+    trackDuration: number; pxPerSec: number;
+    frozenTimelineDuration: number;
+  } | null>(null);
   const [selectedTransitionDividerIndex, setSelectedTransitionDividerIndex] = useState<number | null>(null);
+  const scaleFactorRef = useRef(1);
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [timelineContainerWidth, setTimelineContainerWidth] = useState(0);
   const [currentProjectId, setCurrentProjectId] = useState(() => createProjectId());
@@ -457,12 +474,11 @@ export default function App() {
   const [recordStatus, setRecordStatus] = useState<string | null>(null);
   const [playheadTime, setPlayheadTime] = useState(0);
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
-  const audioBufferRef = useRef<AudioBuffer | null>(null);
-  const audioDataRef = useRef<string | null>(null);
+  const audioBuffersRef = useRef<Map<string, AudioBuffer>>(new Map());
   const audioContextRef = useRef<AudioContext | null>(null);
   const stageAreaRef = useRef<HTMLDivElement>(null);
   const [stageScale, setStageScale] = useState(1);
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const audioSourcesRef = useRef<Map<string, AudioBufferSourceNode>>(new Map());
   const playStartWallRef = useRef(0);
   const playStartHeadRef = useRef(0);
   const playbackFrameRef = useRef(0);
@@ -865,10 +881,8 @@ export default function App() {
     undoStackRef.current = [];
     setUndoDepth(0);
     setShowAudioUpload(false);
-    setAudioFile(null);
-    setAudioDuration(null);
-    audioBufferRef.current = null;
-    audioDataRef.current = null;
+    setAudioTracks([]);
+    audioBuffersRef.current.clear();
     setSelectedTransitionDividerIndex(null);
     setIsPlaying(false);
     setIsRecording(false);
@@ -962,10 +976,8 @@ export default function App() {
     undoStackRef.current = [];
     setUndoDepth(0);
     setShowAudioUpload(false);
-    setAudioFile(null);
-    setAudioDuration(null);
-    audioBufferRef.current = null;
-    audioDataRef.current = null;
+    setAudioTracks([]);
+    audioBuffersRef.current.clear();
     setSelectedTransitionDividerIndex(null);
     setIsPlaying(false);
     setIsRecording(false);
@@ -985,27 +997,43 @@ export default function App() {
     openQuickTutorial();
 
     // Restore audio if saved with the project
-    if (record.audioData && record.audioFileName) {
+    if (record.audioTracks && record.audioTracks.length > 0) {
+      setAudioTracks(record.audioTracks);
+      record.audioTracks.forEach(async (track) => {
+        try {
+          const binaryString = atob(track.audioData);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+          const audioCtx = new AudioContext();
+          const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
+          audioBuffersRef.current.set(track.id, audioBuffer);
+          audioCtx.close();
+        } catch {}
+      });
+    } else if (record.audioData && record.audioFileName) {
+      // Backwards-compat: migrate old single-track format
       const savedAudioData = record.audioData;
       const savedAudioFileName = record.audioFileName;
       (async () => {
         try {
           const binaryString = atob(savedAudioData);
           const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
+          for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
           const audioCtx = new AudioContext();
           const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
-          audioBufferRef.current = audioBuffer;
           audioCtx.close();
-          const file = new File([bytes], savedAudioFileName);
-          audioDataRef.current = savedAudioData;
-          setAudioFile(file);
-          setAudioDuration(audioBuffer.duration);
-        } catch {
-          // ignore errors restoring audio
-        }
+          const trackId = `track-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          const migratedTrack: AudioTrack = {
+            id: trackId,
+            fileName: savedAudioFileName,
+            duration: audioBuffer.duration,
+            audioData: savedAudioData,
+            trimStart: 0,
+            trimEnd: audioBuffer.duration,
+          };
+          audioBuffersRef.current.set(trackId, audioBuffer);
+          setAudioTracks([migratedTrack]);
+        } catch {}
       })();
     }
   };
@@ -1030,9 +1058,17 @@ export default function App() {
   const formationSpanPx = formations.length > 0
     ? 40 + formations.reduce((s, f) => s + f.duration, 0)
     : 0;
-  const timelineDuration = audioDuration != null
-    ? audioDuration
-    : Math.max(60, timelineContainerWidth > 0 ? (formationSpanPx / timelineContainerWidth) * 60 : 60);
+  const formationBasedDuration = Math.max(60, timelineContainerWidth > 0 ? (formationSpanPx / timelineContainerWidth) * 60 : 60);
+  const audioBasedDuration = audioTracks.length > 0
+    ? Math.max(0.1, audioTracks.reduce((sum, t) => sum + (t.trimEnd - t.trimStart), 0))
+    : 0;
+  // Timeline extends to whichever is longer; freeze during a trim drag so markers don't move
+  const computedTimelineDuration = Math.max(formationBasedDuration, audioBasedDuration);
+  const timelineDuration = trimmingTrack?.frozenTimelineDuration ?? computedTimelineDuration;
+  // If audio extends the timeline, compress formation rendering proportionally so they
+  // stay at the same time-positions relative to the time markers.
+  const scaleFactor = formationBasedDuration / timelineDuration;
+  scaleFactorRef.current = scaleFactor;
 
   function getTimeInterval(secs: number): number {
     if (secs <= 30) return 5;
@@ -1855,39 +1891,44 @@ export default function App() {
     setEditingFormationId(null);
   };
 
-  const handleAudioFileSelect = async (file: File) => {
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const audioCtx = new AudioContext();
-      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
-      setAudioDuration(audioBuffer.duration);
-      audioBufferRef.current = audioBuffer;
-      audioCtx.close();
-      // Convert to base64 for persistence
-      const uint8 = new Uint8Array(arrayBuffer);
-      const CHUNK = 8192;
-      let binary = '';
-      for (let i = 0; i < uint8.length; i += CHUNK) {
-        binary += String.fromCharCode(...uint8.subarray(i, i + CHUNK));
+  const handleAudioFileSelect = async (files: File[]) => {
+    for (const file of files) {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const audioCtx = new AudioContext();
+        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+        audioCtx.close();
+        const uint8 = new Uint8Array(arrayBuffer);
+        const CHUNK = 8192;
+        let binary = '';
+        for (let i = 0; i < uint8.length; i += CHUNK) {
+          binary += String.fromCharCode(...uint8.subarray(i, i + CHUNK));
+        }
+        const audioData = btoa(binary);
+        const trackId = `track-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const newTrack: AudioTrack = {
+          id: trackId,
+          fileName: file.name,
+          duration: audioBuffer.duration,
+          audioData,
+          trimStart: 0,
+          trimEnd: audioBuffer.duration,
+        };
+        audioBuffersRef.current.set(trackId, audioBuffer);
+        setAudioTracks(prev => [...prev, newTrack]);
+      } catch {
+        // ignore decode errors for individual files
       }
-      audioDataRef.current = btoa(binary);
-    } catch {
-      setAudioDuration(null);
-      audioBufferRef.current = null;
-      audioDataRef.current = null;
     }
-    setAudioFile(file);
     setShowAudioUpload(false);
   };
 
   const stopPlayback = () => {
     playSessionRef.current += 1;
-    try {
-      audioSourceRef.current?.stop();
-    } catch {
-      // Source may already be stopped; ignore.
-    }
-    audioSourceRef.current = null;
+    audioSourcesRef.current.forEach(source => {
+      try { source.stop(); } catch {}
+    });
+    audioSourcesRef.current.clear();
     audioContextRef.current?.close();
     audioContextRef.current = null;
     cancelAnimationFrame(playbackFrameRef.current);
@@ -2188,15 +2229,31 @@ export default function App() {
     const mixedStream = new MediaStream(canvasStream.getVideoTracks());
 
     let recorderAudioCtx: AudioContext | null = null;
-    let recorderAudioSource: AudioBufferSourceNode | null = null;
-    if (audioBufferRef.current) {
+    if (audioTracks.length > 0) {
       recorderAudioCtx = new AudioContext();
       const destination = recorderAudioCtx.createMediaStreamDestination();
-      recorderAudioSource = recorderAudioCtx.createBufferSource();
-      recorderAudioSource.buffer = audioBufferRef.current;
-      recorderAudioSource.connect(destination);
-      recorderAudioSource.connect(recorderAudioCtx.destination);
-      recorderAudioSource.start(0, recordingStartTime);
+      let trackTimelineStart = 0;
+      audioTracks.forEach(track => {
+        const trimmedDuration = track.trimEnd - track.trimStart;
+        const trackTimelineEnd = trackTimelineStart + trimmedDuration;
+        if (recordingStartTime < trackTimelineEnd) {
+          const buffer = audioBuffersRef.current.get(track.id);
+          if (buffer) {
+            const offsetWithinTrimmed = Math.max(0, recordingStartTime - trackTimelineStart);
+            const offsetInAudio = track.trimStart + offsetWithinTrimmed;
+            const playDuration = trimmedDuration - offsetWithinTrimmed;
+            if (playDuration > 0) {
+              const delaySeconds = Math.max(0, trackTimelineStart - recordingStartTime);
+              const src = recorderAudioCtx!.createBufferSource();
+              src.buffer = buffer;
+              src.connect(destination);
+              src.connect(recorderAudioCtx!.destination);
+              src.start(recorderAudioCtx!.currentTime + delaySeconds, offsetInAudio, playDuration);
+            }
+          }
+        }
+        trackTimelineStart += trimmedDuration;
+      });
       destination.stream.getAudioTracks().forEach((track) => mixedStream.addTrack(track));
     }
 
@@ -2219,12 +2276,6 @@ export default function App() {
         window.clearInterval(recordingIntervalRef.current);
         recordingIntervalRef.current = null;
       }
-      try {
-        recorderAudioSource?.stop();
-      } catch {
-        // Source may already be stopped; ignore.
-      }
-      recorderAudioSource = null;
       mixedStream.getTracks().forEach((track) => track.stop());
       if (recorderAudioCtx) {
         await recorderAudioCtx.close();
@@ -2311,20 +2362,33 @@ export default function App() {
     const startFrom = playheadTime >= timelineDuration ? 0 : playheadTime;
     if (startFrom === 0) setPlayheadTime(0);
 
-    // Start audio if a buffer is loaded
-    if (audioBufferRef.current) {
+    // Start audio tracks sequentially
+    if (audioTracks.length > 0) {
       const ctx = new AudioContext();
       audioContextRef.current = ctx;
-      const source = ctx.createBufferSource();
-      source.buffer = audioBufferRef.current;
-      source.connect(ctx.destination);
-      source.start(0, startFrom);
-      audioSourceRef.current = source;
-      source.onended = () => {
-        cancelAnimationFrame(playbackFrameRef.current);
-        setIsPlaying(false);
-        setPlayheadTime(0);
-      };
+      audioSourcesRef.current.clear();
+      let trackTimelineStart = 0;
+      audioTracks.forEach(track => {
+        const trimmedDuration = track.trimEnd - track.trimStart;
+        const trackTimelineEnd = trackTimelineStart + trimmedDuration;
+        if (startFrom < trackTimelineEnd) {
+          const buffer = audioBuffersRef.current.get(track.id);
+          if (buffer) {
+            const offsetWithinTrimmed = Math.max(0, startFrom - trackTimelineStart);
+            const offsetInAudio = track.trimStart + offsetWithinTrimmed;
+            const playDuration = trimmedDuration - offsetWithinTrimmed;
+            if (playDuration > 0) {
+              const delaySeconds = Math.max(0, trackTimelineStart - startFrom);
+              const source = ctx.createBufferSource();
+              source.buffer = buffer;
+              source.connect(ctx.destination);
+              source.start(ctx.currentTime + delaySeconds, offsetInAudio, playDuration);
+              audioSourcesRef.current.set(track.id, source);
+            }
+          }
+        }
+        trackTimelineStart += trimmedDuration;
+      });
     }
 
     playStartWallRef.current = performance.now();
@@ -2356,8 +2420,8 @@ export default function App() {
     wasPlayingOnDragRef.current = isPlaying;
     if (isPlaying) {
       // Pause RAF + audio but keep isPlaying true so we can resume
-      audioSourceRef.current?.stop();
-      audioSourceRef.current = null;
+      audioSourcesRef.current.forEach(s => { try { s.stop(); } catch {} });
+      audioSourcesRef.current.clear();
       audioContextRef.current?.close();
       audioContextRef.current = null;
       cancelAnimationFrame(playbackFrameRef.current);
@@ -2386,19 +2450,32 @@ export default function App() {
       if (wasPlayingOnDragRef.current) {
         // Restart playback from new position
         const resumeFrom = playheadTimeRef.current;
-        if (audioBufferRef.current) {
+        if (audioTracks.length > 0) {
           const ctx = new AudioContext();
           audioContextRef.current = ctx;
-          const source = ctx.createBufferSource();
-          source.buffer = audioBufferRef.current;
-          source.connect(ctx.destination);
-          source.start(0, resumeFrom);
-          audioSourceRef.current = source;
-          source.onended = () => {
-            cancelAnimationFrame(playbackFrameRef.current);
-            setIsPlaying(false);
-            setPlayheadTime(0);
-          };
+          audioSourcesRef.current.clear();
+          let trackTimelineStart = 0;
+          audioTracks.forEach(track => {
+            const trimmedDuration = track.trimEnd - track.trimStart;
+            const trackTimelineEnd = trackTimelineStart + trimmedDuration;
+            if (resumeFrom < trackTimelineEnd) {
+              const buffer = audioBuffersRef.current.get(track.id);
+              if (buffer) {
+                const offsetWithinTrimmed = Math.max(0, resumeFrom - trackTimelineStart);
+                const offsetInAudio = track.trimStart + offsetWithinTrimmed;
+                const playDuration = trimmedDuration - offsetWithinTrimmed;
+                if (playDuration > 0) {
+                  const delaySeconds = Math.max(0, trackTimelineStart - resumeFrom);
+                  const source = ctx.createBufferSource();
+                  source.buffer = buffer;
+                  source.connect(ctx.destination);
+                  source.start(ctx.currentTime + delaySeconds, offsetInAudio, playDuration);
+                  audioSourcesRef.current.set(track.id, source);
+                }
+              }
+            }
+            trackTimelineStart += trimmedDuration;
+          });
         }
         playStartWallRef.current = performance.now();
         playStartHeadRef.current = resumeFrom;
@@ -2430,6 +2507,56 @@ export default function App() {
       window.removeEventListener('mouseup', onMouseUp);
     };
   }, [isDraggingPlayhead, timelineDuration, timelineContainerWidth]);
+
+  const handleTrimHandleMouseDown = (e: React.MouseEvent, track: AudioTrack, handle: 'start' | 'end') => {
+    e.stopPropagation();
+    if (isPlaying) stopPlayback();
+    const pxPerSec = (timelineContainerWidth - 40) / Math.max(0.1, timelineDuration);
+    setTrimmingTrack({
+      trackId: track.id,
+      handle,
+      startX: e.clientX,
+      startValue: handle === 'start' ? track.trimStart : track.trimEnd,
+      trackDuration: track.duration,
+      pxPerSec,
+      frozenTimelineDuration: timelineDuration,
+    });
+  };
+
+  useEffect(() => {
+    if (!trimmingTrack) return;
+    const { trackId, handle, startX, startValue, trackDuration, pxPerSec } = trimmingTrack;
+
+    const onMouseMove = (e: MouseEvent) => {
+      const deltaT = (e.clientX - startX) / pxPerSec;
+      setAudioTracks(prev => prev.map(track => {
+        if (track.id !== trackId) return track;
+        if (handle === 'start') {
+          const newStart = Math.max(0, Math.min(track.trimEnd - 0.1, startValue + deltaT));
+          return { ...track, trimStart: newStart };
+        } else {
+          const newEnd = Math.max(track.trimStart + 0.1, Math.min(trackDuration, startValue + deltaT));
+          return { ...track, trimEnd: newEnd };
+        }
+      }));
+    };
+
+    const onMouseUp = () => setTrimmingTrack(null);
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [trimmingTrack]);
+
+  const removeAudioTrack = (trackId: string) => {
+    stopPlayback();
+    setPlayheadTime(0);
+    audioBuffersRef.current.delete(trackId);
+    setAudioTracks(prev => prev.filter(t => t.id !== trackId));
+  };
 
   useEffect(() => {
     if (!draggedPathHandle) return;
@@ -2561,7 +2688,8 @@ export default function App() {
 
   const handleResizeMove = (e: MouseEvent) => {
     if (!resizedFormation) return;
-    const deltaX = e.clientX - resizedFormation.startX;
+    const sf = scaleFactorRef.current;
+    const deltaX = (e.clientX - resizedFormation.startX) / sf;
     const newDuration = Math.max(50, resizedFormation.startDuration + deltaX);
     setFormations(formations.map(f =>
       f.id === resizedFormation.id ? { ...f, duration: newDuration } : f
@@ -2574,8 +2702,9 @@ export default function App() {
     setReorderedFormation((current) => current ? { ...current, currentX: e.clientX } : current);
 
     const rect = timelineRef.current.getBoundingClientRect();
+    const sf = scaleFactorRef.current;
     const dragLeft = e.clientX - rect.left - reorderedFormation.pointerOffsetX;
-    const dragWidth = formations.find((formation) => formation.id === reorderedFormation.id)?.duration ?? 0;
+    const dragWidth = (formations.find((formation) => formation.id === reorderedFormation.id)?.duration ?? 0) * sf;
     const dragCenter = dragLeft + (dragWidth / 2);
 
     if (Math.abs(e.clientX - reorderedFormation.startX) > STAGE_DRAG_THRESHOLD) {
@@ -2587,12 +2716,13 @@ export default function App() {
     let targetIndex = withoutDragged.length;
     for (let idx = 0; idx < withoutDragged.length; idx += 1) {
       const formation = withoutDragged[idx];
-      const center = cursor + (formation.duration / 2);
+      const scaledW = formation.duration * sf;
+      const center = cursor + (scaledW / 2);
       if (dragCenter < center) {
         targetIndex = idx;
         break;
       }
-      cursor += formation.duration;
+      cursor += scaledW;
     }
 
     const currentIndex = formations.findIndex((formation) => formation.id === reorderedFormation.id);
@@ -2775,8 +2905,7 @@ export default function App() {
       formations: savedFormations,
       // Legacy project-level transition value retained for backwards compatibility.
       transitionSeconds: DEFAULT_FORMATION_TRANSITION_SECONDS,
-      audioFileName: audioFile?.name,
-      audioData: audioDataRef.current ?? undefined,
+      audioTracks: audioTracks.length > 0 ? audioTracks : undefined,
     };
 
     setProjectLibrary((prevProjects) => {
@@ -2791,7 +2920,7 @@ export default function App() {
       }
       return nextProjects;
     });
-  }, [showHomeScreen, currentProjectId, projectTitle, formations, dancers, safeStageWidth, safeStageHeight, audioFile]);
+  }, [showHomeScreen, currentProjectId, projectTitle, formations, dancers, safeStageWidth, safeStageHeight, audioTracks]);
 
   // Persist the last-open project ID so a page reload can reopen it
   useEffect(() => {
@@ -3950,7 +4079,9 @@ export default function App() {
 
             {/* Formation Blocks */}
             {formations.map((formation, index) => {
-              const leftPx = 40 + formations.slice(0, index).reduce((s, p) => s + p.duration, 0);
+              const rawLeftPx = 40 + formations.slice(0, index).reduce((s, p) => s + p.duration, 0);
+              const leftPx = 40 + (rawLeftPx - 40) * scaleFactor;
+              const scaledWidth = formation.duration * scaleFactor;
               const isDragged = reorderedFormation?.id === formation.id;
               const timelineRect = timelineRef.current?.getBoundingClientRect();
               const draggedLeft = isDragged && timelineRect
@@ -3959,7 +4090,7 @@ export default function App() {
               const translateX = isDragged ? draggedLeft - leftPx : 0;
 
               const hasNextFormation = index < formations.length - 1;
-              const dividerLeftPx = leftPx + formation.duration;
+              const dividerLeftPx = leftPx + scaledWidth;
               const dividerSeconds = getTransitionSecondsForDivider(index);
               const isSelectedDivider = selectedDividerIndex === index;
 
@@ -3972,7 +4103,7 @@ export default function App() {
                     style={{
                       left: `${leftPx}px`,
                       top: `calc(50% - ${TIMELINE_BLOCK_HEIGHT / 2}px)`,
-                      width: `${formation.duration}px`,
+                      width: `${scaledWidth}px`,
                       height: `${TIMELINE_BLOCK_HEIGHT}px`,
                       transform: `translateX(${translateX}px)`,
                       zIndex: isDragged ? 15 : 1,
@@ -4044,31 +4175,63 @@ export default function App() {
 
           {/* Audio Track */}
           <div className="absolute left-0 bottom-0 right-0 h-1/2">
+            {/* Add audio button */}
             <button
-              className="absolute left-2 top-1/2 -translate-y-1/2 w-6 h-6 bg-[#2a2a2a] border border-[#3a3a3a] rounded flex items-center justify-center hover:bg-[#333] transition-colors"
+              className="absolute left-2 top-1/2 -translate-y-1/2 w-6 h-6 bg-[#2a2a2a] border border-[#3a3a3a] rounded flex items-center justify-center hover:bg-[#333] transition-colors z-10"
               onClick={() => setShowAudioUpload(true)}
               title="Upload audio to sync with the timeline"
             >
               <Plus size={16} className="text-[#888]" />
             </button>
-            {audioFile && timelineContainerWidth > 0 && (
-              <div
-                className="absolute top-1/2 -translate-y-1/2 h-[39px] bg-[rgba(139,114,190,0.2)] border border-[#8b72be] rounded-[5px] flex items-center px-3 gap-2 overflow-hidden"
-                style={{ left: 40, width: timelineContainerWidth - 40 }}
-              >
-                <span className="text-white text-[13px] truncate flex-1">{audioFile.name}</span>
-                {audioDuration != null && (
-                  <span className="text-[#8b72be] text-[12px] flex-shrink-0">{formatTime(audioDuration)}</span>
-                )}
-                <button
-                  className="text-[#888] hover:text-white transition-colors flex-shrink-0"
-                  onClick={() => { stopPlayback(); setPlayheadTime(0); setAudioFile(null); setAudioDuration(null); audioBufferRef.current = null; audioDataRef.current = null; }}
-                  title="Remove audio from this project"
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            )}
+
+            {/* Tracks packed sequentially by trimmed duration */}
+            {timelineContainerWidth > 0 && (() => {
+              const pxPerSec = (timelineContainerWidth - 40) / timelineDuration;
+              let cursor = 40;
+              return audioTracks.map((track) => {
+                const trimmedDuration = track.trimEnd - track.trimStart;
+                const barWidth = Math.max(4, trimmedDuration * pxPerSec);
+                const barLeft = cursor;
+                cursor += barWidth;
+
+                return (
+                  <div key={track.id} className="absolute top-1/2 -translate-y-1/2 h-[39px]" style={{ left: barLeft, width: barWidth }}>
+                    {/* Bar */}
+                    <div className="absolute inset-0 rounded-[5px] bg-[rgba(139,114,190,0.22)] border border-[#8b72be] flex items-center gap-1 px-2 overflow-hidden select-none">
+                      <span className="text-white text-[11px] truncate flex-1 pointer-events-none">{track.fileName}</span>
+                      <span className="text-[#8b72be] text-[10px] flex-shrink-0 pointer-events-none">{formatTime(trimmedDuration)}</span>
+                    </div>
+
+                    {/* Left trim handle */}
+                    <div
+                      className="absolute top-0 bottom-0 left-0 w-[10px] cursor-ew-resize z-10 flex items-center justify-center group"
+                      onMouseDown={(e) => handleTrimHandleMouseDown(e, track, 'start')}
+                      title="Drag to trim start"
+                    >
+                      <div className="w-[3px] h-[22px] bg-[#8b72be] rounded-full group-hover:bg-white transition-colors" />
+                    </div>
+
+                    {/* Right trim handle */}
+                    <div
+                      className="absolute top-0 bottom-0 right-0 w-[10px] cursor-ew-resize z-10 flex items-center justify-center group"
+                      onMouseDown={(e) => handleTrimHandleMouseDown(e, track, 'end')}
+                      title="Drag to trim end"
+                    >
+                      <div className="w-[3px] h-[22px] bg-[#8b72be] rounded-full group-hover:bg-white transition-colors" />
+                    </div>
+
+                    {/* Remove button */}
+                    <button
+                      className="absolute -top-2 -right-2 w-4 h-4 rounded-full bg-[#2a2a2a] border border-[#3a3a3a] z-20 flex items-center justify-center text-[#888] hover:text-white hover:border-white transition-colors"
+                      onClick={() => removeAudioTrack(track.id)}
+                      title="Remove audio track"
+                    >
+                      <X size={8} />
+                    </button>
+                  </div>
+                );
+              });
+            })()}
           </div>
         </div>
       </div>
@@ -4523,28 +4686,25 @@ export default function App() {
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
-                const file = e.dataTransfer.files[0];
-                if (file && file.name.endsWith('.wav')) {
-                  handleAudioFileSelect(file);
-                }
+                const files = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.wav'));
+                if (files.length > 0) handleAudioFileSelect(files);
               }}
             >
               <div className="w-12 h-12 bg-[#1d1d1d] rounded-full flex items-center justify-center">
                 <Plus size={24} className="text-[#8b72be]" />
               </div>
               <p className="text-[#ccc] text-[14px] text-center">Click to browse or drag & drop</p>
-              <p className="text-[#666] text-[12px]">.wav files only</p>
+              <p className="text-[#666] text-[12px]">.wav files — select multiple to add several tracks</p>
             </div>
             <input
               ref={audioInputRef}
               type="file"
               accept=".wav"
+              multiple
               className="hidden"
               onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  handleAudioFileSelect(file);
-                }
+                const files = Array.from(e.target.files ?? []);
+                if (files.length > 0) handleAudioFileSelect(files);
                 e.target.value = '';
               }}
             />
