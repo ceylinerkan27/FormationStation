@@ -1280,7 +1280,10 @@ export default function App() {
     }
   };
 
-  const handleStageLibraryDragLeave = () => {
+  const handleStageLibraryDragLeave = (e?: React.DragEvent<HTMLDivElement>) => {
+    if (e && e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      return;
+    }
     setIsStageLibraryDragOver(false);
   };
 
@@ -1357,7 +1360,7 @@ export default function App() {
   };
 
   const handleStageDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
-    handleStageLibraryDragLeave();
+    handleStageLibraryDragLeave(e);
     handleStagePeopleDragLeave(e);
   };
 
@@ -3447,7 +3450,7 @@ export default function App() {
             {showSearchDropdown && (
               <div 
                 ref={searchDropdownRef}
-                className="absolute top-[calc(100%+4px)] left-0 bg-[#252525] border border-[#333] rounded-[7px] shadow-lg z-50 w-[430px]"
+                className="absolute top-[calc(100%+4px)] left-0 bg-[#252525] border border-[#333] rounded-[7px] shadow-lg z-50 w-[400px]"
               >
                 <div className="p-3 border-b border-[#333]">
                   <input
@@ -3491,19 +3494,24 @@ export default function App() {
                               </div>
                               <span className="text-[#8b72be] text-[11px] whitespace-nowrap">{template.duration}px</span>
                             </div>
-                            <div className="mt-2 h-[72px] bg-[#1d1d1d] border border-[#3a3a3a] rounded-[6px] relative overflow-hidden">
-                              {template.dancers.map((dancer, idx) => (
-                                <div
-                                  key={`${template.id}-${dancer.sourceDancerId}-${idx}`}
-                                  className="absolute w-[9px] h-[9px] rounded-full border border-black/20"
-                                  style={{
-                                    left: `${Math.max(0, Math.min(100, dancer.xRatio * 100))}%`,
-                                    top: `${Math.max(0, Math.min(100, dancer.yRatio * 100))}%`,
-                                    transform: 'translate(-50%, -50%)',
-                                    backgroundColor: dancer.color
-                                  }}
-                                />
-                              ))}
+                            <div className="mt-2 flex justify-center">
+                              <div
+                                className="h-[96px] w-auto max-w-full bg-[#1d1d1d] border border-[#3a3a3a] rounded-[6px] relative overflow-hidden"
+                                style={{ aspectRatio: `${safeStageWidth} / ${safeStageHeight}` }}
+                              >
+                                {template.dancers.map((dancer, idx) => (
+                                  <div
+                                    key={`${template.id}-${dancer.sourceDancerId}-${idx}`}
+                                    className="absolute w-[9px] h-[9px] rounded-full border border-black/20"
+                                    style={{
+                                      left: `${Math.max(0, Math.min(100, dancer.xRatio * 100))}%`,
+                                      top: `${Math.max(0, Math.min(100, dancer.yRatio * 100))}%`,
+                                      transform: 'translate(-50%, -50%)',
+                                      backgroundColor: dancer.color
+                                    }}
+                                  />
+                                ))}
+                              </div>
                             </div>
                             <div className="mt-2 flex justify-between text-[#888] text-[11px]">
                               <span>Drag thumbnail to stage</span>
@@ -3822,7 +3830,7 @@ export default function App() {
         </button>
 
         {/* Stage Area */}
-        {formations.length > 0 && selectedFormation && (
+        {formations.length > 0 && selectedFormation ? (
           <div ref={stageAreaRef} className="flex-1 flex flex-col items-center justify-center p-8 gap-6 overflow-hidden">
             {/* Formation Name Above Stage */}
             <div className="flex-shrink-0">
@@ -4007,6 +4015,18 @@ export default function App() {
             <div className="flex-shrink-0">
               <span className="text-[#8b8b8b] text-[24px] tracking-wider">AUDIENCE</span>
             </div>
+          </div>
+        ) : (
+          <div
+            className="flex-1 relative"
+            onDragEnter={handleStageLibraryDragOver}
+            onDragOver={handleStageLibraryDragOver}
+            onDragLeave={handleStageLibraryDragLeave}
+            onDrop={handleStageLibraryDrop}
+          >
+            {isStageLibraryDragOver && (
+              <div className="absolute inset-8 rounded-[16px] border-[3px] border-dashed border-[#b79ef2] bg-[#2d2738]/80 pointer-events-none" />
+            )}
           </div>
         )}
       </div>
