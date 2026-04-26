@@ -355,6 +355,7 @@ const TIMELINE_BLOCK_HEIGHT = 39;
 const PROJECT_LIBRARY_STORAGE_KEY = 'formation-station-project-library-v1';
 const LAST_OPEN_PROJECT_KEY = 'formation-station-last-open-project';
 const QUICK_TUTORIAL_SEEN_KEY = 'formation-station-quick-tutorial-seen-v1';
+const DEFAULT_PROJECT_TITLE_BASE = 'my project';
 const PROJECT_LIBRARY_MAX_PROJECTS = 30;
 
 // Captured synchronously at module load time, before any React effects can clear it.
@@ -396,6 +397,21 @@ const QUICK_TUTORIAL_STEPS: QuickTutorialStep[] = [
 
 const createProjectId = () => `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+const normalizeProjectTitleForComparison = (title: string) => title.trim().replace(/\s+/g, ' ').toLowerCase();
+
+const getNextDefaultProjectTitle = (projects: ProjectLibraryRecord[]) => {
+  const usedTitles = new Set(projects.map((project) => normalizeProjectTitleForComparison(project.projectTitle)));
+  if (!usedTitles.has(DEFAULT_PROJECT_TITLE_BASE)) {
+    return DEFAULT_PROJECT_TITLE_BASE;
+  }
+
+  let suffix = 1;
+  while (usedTitles.has(`${DEFAULT_PROJECT_TITLE_BASE} ${suffix}`)) {
+    suffix += 1;
+  }
+  return `${DEFAULT_PROJECT_TITLE_BASE} ${suffix}`;
+};
+
 const readProjectLibraryFromStorage = (): ProjectLibraryRecord[] => {
   if (typeof window === 'undefined') return [];
   try {
@@ -433,7 +449,7 @@ export default function App() {
   const [draggedPeopleDancerId, setDraggedPeopleDancerId] = useState<string | null>(null);
   const [removalDialog, setRemovalDialog] = useState<{ dancerId: string; dancerName: string } | null>(null);
   
-  const [projectTitle, setProjectTitle] = useState('Hip Hop Piece Formations');
+  const [projectTitle, setProjectTitle] = useState(DEFAULT_PROJECT_TITLE_BASE);
   const [editingProjectTitle, setEditingProjectTitle] = useState(false);
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
   const [stageConfig, setStageConfig] = useState<StageConfig>(DEFAULT_STAGE_CONFIG);
@@ -445,7 +461,6 @@ export default function App() {
   const [hoverTooltip, setHoverTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
   const tooltipTargetRef = useRef<HTMLElement | null>(null);
   const tooltipBoxRef = useRef<HTMLDivElement | null>(null);
-  const tooltipSeenByScopeRef = useRef<Map<string, Set<string>>>(new Map());
   
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; formationId: string } | null>(null);
   const [formationDeleteDialog, setFormationDeleteDialog] = useState<{ formationId: string; formationName: string } | null>(null);
@@ -855,6 +870,7 @@ export default function App() {
   const handleOpenNewProject = () => {
     stopPlayback();
     stopRecording();
+    const nextProjectTitle = getNextDefaultProjectTitle(projectLibrary);
 
     setCurrentProjectId(createProjectId());
     setShowHomeScreen(false);
@@ -874,7 +890,7 @@ export default function App() {
     setSelectionBox(null);
     setShowPeopleDropdown(false);
     setRemovalDialog(null);
-    setProjectTitle('Hip Hop Piece Formations');
+    setProjectTitle(nextProjectTitle);
     setEditingProjectTitle(false);
     setContextMenu(null);
     setFormationDeleteDialog(null);
@@ -899,7 +915,7 @@ export default function App() {
     setSearchQuery('');
     setDraggedLibraryFormationId(null);
     setIsStageLibraryDragOver(false);
-    openQuickTutorial();
+    openQuickTutorial(true);
   };
 
   const handleOpenExistingProject = (record: ProjectLibraryRecord) => {
@@ -3230,17 +3246,6 @@ export default function App() {
       return target.closest<HTMLElement>('[title]');
     };
 
-    const getScopeKey = () => showHomeScreen ? '__home__' : currentProjectId;
-
-    const getSeenSetForScope = () => {
-      const scopeKey = getScopeKey();
-      const existing = tooltipSeenByScopeRef.current.get(scopeKey);
-      if (existing) return existing;
-      const created = new Set<string>();
-      tooltipSeenByScopeRef.current.set(scopeKey, created);
-      return created;
-    };
-
     const clampTooltipPosition = (rawX: number, rawY: number) => {
       const margin = 8;
       const fallbackWidth = 260;
@@ -3264,13 +3269,6 @@ export default function App() {
         hideTooltip();
         return;
       }
-
-      const seenSet = getSeenSetForScope();
-      if (seenSet.has(text)) {
-        hideTooltip();
-        return;
-      }
-      seenSet.add(text);
 
       tooltipTargetRef.current = element;
       const nextPosition = clampTooltipPosition(clientX + 12, clientY + 16);
@@ -3314,12 +3312,6 @@ export default function App() {
       if (!element) return;
       const text = element.getAttribute('title');
       if (!text) return;
-      const seenSet = getSeenSetForScope();
-      if (seenSet.has(text)) {
-        hideTooltip();
-        return;
-      }
-      seenSet.add(text);
       const rect = element.getBoundingClientRect();
       tooltipTargetRef.current = element;
       const nextPosition = clampTooltipPosition(
