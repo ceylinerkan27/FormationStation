@@ -3881,7 +3881,7 @@ export default function App() {
 
         {/* Left Panel (Formations List) */}
         <div
-          className={`absolute left-0 top-0 bottom-[150px] bg-[#252525] rounded-r-[7px] border-r border-[#333] transition-transform duration-300 z-10 ${
+          className={`absolute left-0 top-0 bottom-[150px] bg-[#252525] rounded-r-[7px] border-r border-[#333] transition-transform duration-300 z-10 flex flex-col overflow-hidden ${
             isPanelOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
           style={{ width: '280px' }}
@@ -3889,7 +3889,7 @@ export default function App() {
           <div className="h-[56px] border-b border-[#333] px-4 flex items-center">
             <h2 className="text-[#aaa] text-[13px] font-semibold tracking-[0.52px] uppercase">FORMATIONS OVERVIEW</h2>
           </div>
-          <div className="p-3 flex flex-col gap-3">
+          <div className="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-3">
             {formations.map((formation) => (
               <div
                 key={formation.id}
@@ -3936,7 +3936,7 @@ export default function App() {
         >
           <ChevronRight
             size={13}
-            className={`text-[#666] transition-transform ${isPanelOpen ? '' : 'rotate-180'}`}
+            className={`text-[#666] transition-transform ${isPanelOpen ? 'rotate-180' : ''}`}
           />
         </button>
 
