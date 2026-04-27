@@ -4763,6 +4763,7 @@ export default function App() {
                 <h4 className="text-white text-[15px] font-semibold mb-2">1) Getting started</h4>
                 <ul className="list-disc pl-5 space-y-1">
                   <li>Click <span className="text-white font-medium">open new project</span> on the home screen.</li>
+                  <li>Double click the project name to edit it on the project screen, or edit it in the home screen with the <span className="text-white font-medium">rename</span> button.</li>
                   <li>Use the <span className="text-white font-medium">+ button on the formation track</span> to create formations.</li>
                   <li>Click a formation block to select it before editing dancers, notes, or timing.</li>
                 </ul>
@@ -4775,6 +4776,7 @@ export default function App() {
                   <li>Adjust formation length using the <span className="text-white font-medium">length - / +</span> controls in the top bar.</li>
                   <li>Click a divider badge between two formation blocks (for example <span className="text-white font-medium">1s</span>), then use the top-bar <span className="text-white font-medium">transition</span> controls to set that specific transition time (for example, 5s).</li>
                   <li>You can also drag a formation block&apos;s right edge in the timeline to resize its duration.</li>
+                  <li>Use the left-side <span className="text-white font-medium">Formation Overview</span> tab to browse all formations; click its arrow handle to open or close it and scroll when the list is long.</li>
                   <li>Use the top-right <span className="text-white font-medium">Settings</span> button to change stage size, ratio, and grid lines.</li>
                   <li>Use the <span className="text-white font-medium">Search</span> button to browse formation thumbnails from previous projects by dancer count, then drag a thumbnail to the stage to import it.</li>
                 </ul>
@@ -4785,32 +4787,50 @@ export default function App() {
                 <ul className="list-disc pl-5 space-y-1">
                   <li>Click anywhere on the stage to add a new dancer to the selected formation.</li>
                   <li>Drag a dancer circle on the stage to reposition it.</li>
+                  <li>Click and drag on empty stage space to use the <span className="text-white font-medium">select area</span> tool and select multiple dancers at once.</li>
+                  <li>Hold <span className="text-white font-medium">Shift</span> while clicking dancers to add or remove them from the current selection.</li>
                   <li>Use the <span className="text-white font-medium">People</span> menu to change dancer names and colors.</li>
                   <li>In the People menu, <span className="text-white font-medium">+</span> adds an existing dancer to the current formation.</li>
                   <li>In the People menu, <span className="text-white font-medium">-</span> opens removal options (this formation or all formations).</li>
+                  <li>Use <span className="text-white font-medium">Ctrl/Cmd + C</span> to copy the selected dancers, then switch to a different formation and use <span className="text-white font-medium">Ctrl/Cmd + V</span> to paste only the dancers that are not already there.</li>
+                  <li>You cannot paste copied dancers back into the same formation they came from, which prevents duplicate copies of the same dancer.</li>
                 </ul>
               </section>
 
               <section>
-                <h4 className="text-white text-[15px] font-semibold mb-2">4) Playback and sync</h4>
+                <h4 className="text-white text-[15px] font-semibold mb-2">4) Path editing mode</h4>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>Turn on <span className="text-white font-medium">path edit mode</span> with the toggle in the top-right control bar.</li>
+                  <li>In path edit mode, you can select only one dancer at a time, and only dancers that exist in both the current formation and the next formation can show an editable path.</li>
+                  <li>When a dancer is selected, a transparent preview appears at its next-position destination, along with a path arrow from the current position to that destination.</li>
+                  <li>Use the left-side path menu to choose a path type such as <span className="text-white font-medium">straight line</span>, <span className="text-white font-medium">3-point curve</span>, <span className="text-white font-medium">4-point curve</span>, or <span className="text-white font-medium">L-shape</span>.</li>
+                  <li>Drag the white control handles on the stage to reshape the path. Playback and recording will follow that edited path instead of a straight line.</li>
+                  <li>Turning path edit mode off hides the editing controls and preview graphics, but the saved movement path remains in effect.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h4 className="text-white text-[15px] font-semibold mb-2">5) Playback and sync</h4>
                 <ul className="list-disc pl-5 space-y-1">
                   <li>Press <span className="text-white font-medium">Play</span> to run through formations in timeline order.</li>
                   <li>Drag the red playhead handle to scrub time manually.</li>
+                  <li>Edited path animations are used during playback whenever a dancer has a saved custom transition path.</li>
                   <li>Audio playback syncs to the same playhead when a .wav file is loaded.</li>
                 </ul>
               </section>
 
               <section>
-                <h4 className="text-white text-[15px] font-semibold mb-2">5) Audio upload</h4>
+                <h4 className="text-white text-[15px] font-semibold mb-2">6) Audio upload</h4>
                 <ul className="list-disc pl-5 space-y-1">
                   <li>Click the <span className="text-white font-medium">+</span> in the Audio track to upload audio.</li>
                   <li>Supported upload format is <span className="text-white font-medium">.wav</span>.</li>
+                  <li>Drag the trim handles on an audio clip to shorten its start or end and keep only the section you want in the timeline.</li>
                   <li>Use the small <span className="text-white font-medium">X</span> on the audio strip to remove uploaded audio.</li>
                 </ul>
               </section>
 
               <section>
-                <h4 className="text-white text-[15px] font-semibold mb-2">6) Recording and download</h4>
+                <h4 className="text-white text-[15px] font-semibold mb-2">7) Recording and download</h4>
                 <ul className="list-disc pl-5 space-y-1">
                   <li>Press <span className="text-white font-medium">Record</span> to capture the stage animation and audio.</li>
                   <li>If playback is running, recording starts from the live playhead; if not, it starts from time 0.</li>
@@ -4820,8 +4840,9 @@ export default function App() {
               </section>
 
               <section>
-                <h4 className="text-white text-[15px] font-semibold mb-2">7) Delete, remove, and undo</h4>
+                <h4 className="text-white text-[15px] font-semibold mb-2">8) Delete, remove, and undo</h4>
                 <ul className="list-disc pl-5 space-y-1">
+                  <li>Select one dancer or multiple dancers and press <span className="text-white font-medium">Delete</span> to open removal options for the current formation or all formations.</li>
                   <li>Right-click a formation block (or a formation card) and choose <span className="text-white font-medium">Delete Formation</span>.</li>
                   <li>You can also select a formation and press the <span className="text-white font-medium">Delete</span> key.</li>
                   <li>Use the top-left <span className="text-white font-medium">Undo</span> button (or Ctrl/Cmd + Z) to revert the last change.</li>
@@ -4829,9 +4850,11 @@ export default function App() {
               </section>
 
               <section>
-                <h4 className="text-white text-[15px] font-semibold mb-2">8) Common troubleshooting</h4>
+                <h4 className="text-white text-[15px] font-semibold mb-2">9) Common troubleshooting</h4>
                 <ul className="list-disc pl-5 space-y-1">
                   <li>If you cannot place dancers, make sure a formation is selected first.</li>
+                  <li>If paste does nothing, make sure you copied dancers first and that you are pasting into a different formation.</li>
+                  <li>If path edit mode does not show a preview, make sure the selected dancer appears in both the current formation and the next formation.</li>
                   <li>If playback looks stuck, check timeline lengths and move the playhead away from the end.</li>
                   <li>If recording is unavailable, verify your browser supports MediaRecorder.</li>
                   <li>If you don&apos;t see the saved recording, check your browser&apos;s Downloads folder and download permissions.</li>
