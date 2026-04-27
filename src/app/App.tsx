@@ -136,7 +136,7 @@ interface AudioTrack {
   id: string;
   fileName: string;
   duration: number;
-  audioData: string;
+  audioData?: string;
   trimStart: number;
   trimEnd: number;
 }
@@ -355,6 +355,9 @@ const TIMELINE_BLOCK_HEIGHT = 39;
 const PROJECT_LIBRARY_STORAGE_KEY = 'formation-station-project-library-v1';
 const LAST_OPEN_PROJECT_KEY = 'formation-station-last-open-project';
 const QUICK_TUTORIAL_SEEN_KEY = 'formation-station-quick-tutorial-seen-v1';
+const AUDIO_DB_NAME = 'formation-station-audio-v1';
+const AUDIO_DB_VERSION = 1;
+const AUDIO_STORE_NAME = 'project-audio';
 const DEFAULT_PROJECT_TITLE_BASE = 'my project';
 const PROJECT_LIBRARY_MAX_PROJECTS = 30;
 
@@ -423,6 +426,87 @@ const readProjectLibraryFromStorage = (): ProjectLibraryRecord[] => {
   } catch {
     return [];
   }
+};
+
+const openAudioDatabase = (): Promise<IDBDatabase | null> => {
+  if (typeof window === 'undefined' || !('indexedDB' in window)) return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    try {
+      const request = window.indexedDB.open(AUDIO_DB_NAME, AUDIO_DB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(AUDIO_STORE_NAME)) {
+          db.createObjectStore(AUDIO_STORE_NAME);
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+};
+
+const persistProjectAudioTracks = async (projectId: string, tracks: AudioTrack[]) => {
+  const db = await openAudioDatabase();
+  if (!db) return;
+
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = db.transaction(AUDIO_STORE_NAME, 'readwrite');
+      tx.objectStore(AUDIO_STORE_NAME).put(tracks, projectId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+
+  db.close();
+};
+
+const readPersistedProjectAudioTracks = async (projectId: string): Promise<AudioTrack[] | null> => {
+  const db = await openAudioDatabase();
+  if (!db) return null;
+
+  const tracks = await new Promise<AudioTrack[] | null>((resolve) => {
+    try {
+      const tx = db.transaction(AUDIO_STORE_NAME, 'readonly');
+      const request = tx.objectStore(AUDIO_STORE_NAME).get(projectId);
+      request.onsuccess = () => {
+        const result = request.result;
+        resolve(Array.isArray(result) ? result as AudioTrack[] : null);
+      };
+      request.onerror = () => resolve(null);
+      tx.onabort = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+
+  db.close();
+  return tracks;
+};
+
+const deletePersistedProjectAudioTracks = async (projectId: string) => {
+  const db = await openAudioDatabase();
+  if (!db) return;
+
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = db.transaction(AUDIO_STORE_NAME, 'readwrite');
+      tx.objectStore(AUDIO_STORE_NAME).delete(projectId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+
+  db.close();
 };
 
 export default function App() {
@@ -1014,18 +1098,28 @@ export default function App() {
 
     // Restore audio if saved with the project
     if (record.audioTracks && record.audioTracks.length > 0) {
-      setAudioTracks(record.audioTracks);
-      record.audioTracks.forEach(async (track) => {
-        try {
-          const binaryString = atob(track.audioData);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-          const audioCtx = new AudioContext();
-          const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
-          audioBuffersRef.current.set(track.id, audioBuffer);
-          audioCtx.close();
-        } catch {}
-      });
+      (async () => {
+        const persistedTracks = await readPersistedProjectAudioTracks(record.projectId);
+        const tracksToRestore = persistedTracks && persistedTracks.length > 0
+          ? persistedTracks
+          : record.audioTracks.filter((track) => typeof track.audioData === 'string' && track.audioData.length > 0);
+
+        if (tracksToRestore.length === 0) return;
+
+        setAudioTracks(tracksToRestore);
+        tracksToRestore.forEach(async (track) => {
+          if (!track.audioData) return;
+          try {
+            const binaryString = atob(track.audioData);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+            const audioCtx = new AudioContext();
+            const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
+            audioBuffersRef.current.set(track.id, audioBuffer);
+            audioCtx.close();
+          } catch {}
+        });
+      })();
     } else if (record.audioData && record.audioFileName) {
       // Backwards-compat: migrate old single-track format
       const savedAudioData = record.audioData;
@@ -1049,12 +1143,14 @@ export default function App() {
           };
           audioBuffersRef.current.set(trackId, audioBuffer);
           setAudioTracks([migratedTrack]);
+          void persistProjectAudioTracks(record.projectId, [migratedTrack]);
         } catch {}
       })();
     }
   };
 
   const handleDeleteProject = (projectId: string) => {
+    void deletePersistedProjectAudioTracks(projectId);
     setProjectLibrary((prev) => {
       const next = prev.filter((p) => p.projectId !== projectId);
       try { window.localStorage.setItem(PROJECT_LIBRARY_STORAGE_KEY, JSON.stringify(next)); } catch {}
@@ -1911,6 +2007,7 @@ export default function App() {
   };
 
   const handleAudioFileSelect = async (files: File[]) => {
+    const newTracks: AudioTrack[] = [];
     for (const file of files) {
       try {
         const arrayBuffer = await file.arrayBuffer();
@@ -1934,10 +2031,15 @@ export default function App() {
           trimEnd: audioBuffer.duration,
         };
         audioBuffersRef.current.set(trackId, audioBuffer);
-        setAudioTracks(prev => [...prev, newTrack]);
+        newTracks.push(newTrack);
       } catch {
         // ignore decode errors for individual files
       }
+    }
+    if (newTracks.length > 0) {
+      const nextTracks = [...audioTracks, ...newTracks];
+      setAudioTracks(nextTracks);
+      void persistProjectAudioTracks(currentProjectId, nextTracks);
     }
     setShowAudioUpload(false);
   };
@@ -2574,7 +2676,9 @@ export default function App() {
     stopPlayback();
     setPlayheadTime(0);
     audioBuffersRef.current.delete(trackId);
-    setAudioTracks(prev => prev.filter(t => t.id !== trackId));
+    const nextTracks = audioTracks.filter((track) => track.id !== trackId);
+    setAudioTracks(nextTracks);
+    void persistProjectAudioTracks(currentProjectId, nextTracks);
   };
 
   useEffect(() => {
@@ -2924,7 +3028,9 @@ export default function App() {
       formations: savedFormations,
       // Legacy project-level transition value retained for backwards compatibility.
       transitionSeconds: DEFAULT_FORMATION_TRANSITION_SECONDS,
-      audioTracks: audioTracks.length > 0 ? audioTracks : undefined,
+      audioTracks: audioTracks.length > 0
+        ? audioTracks.map(({ audioData: _audioData, ...track }) => track)
+        : undefined,
     };
 
     setProjectLibrary((prevProjects) => {
@@ -2940,6 +3046,11 @@ export default function App() {
       return nextProjects;
     });
   }, [showHomeScreen, currentProjectId, projectTitle, formations, dancers, safeStageWidth, safeStageHeight, audioTracks]);
+
+  useEffect(() => {
+    if (showHomeScreen) return;
+    void persistProjectAudioTracks(currentProjectId, audioTracks);
+  }, [showHomeScreen, currentProjectId, audioTracks]);
 
   // Persist the last-open project ID so a page reload can reopen it
   useEffect(() => {
@@ -4032,7 +4143,7 @@ export default function App() {
       </div>
 
       {/* Bottom Timeline */}
-      <div className="h-[150px] border-t border-white flex">
+      <div className="h-[150px] border-t border-white flex relative overflow-visible">
         {/* Labels Column */}
         <div className="w-[120px] flex flex-col border-r border-white">
           <div className="h-1/2 flex items-center justify-center border-b border-white">
@@ -4044,7 +4155,7 @@ export default function App() {
         </div>
 
         {/* Timeline Content */}
-        <div className="flex-1 relative" ref={timelineRef}>
+        <div className="flex-1 relative overflow-visible" ref={timelineRef}>
           {/* Playhead */}
           {timelineContainerWidth > 0 && (
             <div
@@ -4071,7 +4182,7 @@ export default function App() {
                 style={{ left: `${40 + (t / timelineDuration) * (timelineContainerWidth - 40)}px` }}
               >
                 <div className="absolute left-0 top-0 bottom-0 w-px bg-white" />
-                <div className="absolute left-2 top-2">
+                <div className="absolute left-2 -top-7">
                   <span className="text-[#b4b1b1] text-[15px]">{formatTime(t)}</span>
                 </div>
               </div>
