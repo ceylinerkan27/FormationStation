@@ -82,6 +82,23 @@ interface DraggedPathHandleState {
   controlIndex: number;
 }
 
+interface RemovalDialogState {
+  dancerIds: string[];
+  dancerNames: string[];
+}
+
+interface CopiedDancerSnapshot {
+  dancerId: string;
+  x: number;
+  y: number;
+}
+
+interface DancerClipboardState {
+  sourceFormationId: string;
+  sourceFormationName: string;
+  dancers: CopiedDancerSnapshot[];
+}
+
 interface Formation {
   id: string;
   name: string;
@@ -91,6 +108,7 @@ interface Formation {
   notes: string;
   dancers: DancerPosition[];
   transitionPaths?: Record<string, DancerPath>;
+  preserveEmpty?: boolean;
 }
 
 interface AppSnapshot {
@@ -128,6 +146,7 @@ interface LibraryFormationTemplate {
   dancerCount: number;
   dancers: LibraryFormationDancer[];
   transitionPaths?: Record<string, StoredDancerPath>;
+  preserveEmpty?: boolean;
   notes?: string;
   updatedAt: number;
 }
@@ -531,7 +550,7 @@ export default function App() {
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [showPeopleDropdown, setShowPeopleDropdown] = useState(false);
   const [draggedPeopleDancerId, setDraggedPeopleDancerId] = useState<string | null>(null);
-  const [removalDialog, setRemovalDialog] = useState<{ dancerId: string; dancerName: string } | null>(null);
+  const [removalDialog, setRemovalDialog] = useState<RemovalDialogState | null>(null);
   
   const [projectTitle, setProjectTitle] = useState(DEFAULT_PROJECT_TITLE_BASE);
   const [editingProjectTitle, setEditingProjectTitle] = useState(false);
@@ -549,6 +568,9 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; formationId: string } | null>(null);
   const [formationDeleteDialog, setFormationDeleteDialog] = useState<{ formationId: string; formationName: string } | null>(null);
   const undoStackRef = useRef<AppSnapshot[]>([]);
+  const dancerClipboardRef = useRef<DancerClipboardState | null>(null);
+  const formationsRef = useRef<Formation[]>([]);
+  const selectedFormationIdRef = useRef<string | null>(null);
   const [undoDepth, setUndoDepth] = useState(0);
 
   const [showAudioUpload, setShowAudioUpload] = useState(false);
@@ -611,6 +633,14 @@ export default function App() {
   const activePathPreviewDancerId = selectedDancerIds.size === 1 ? Array.from(selectedDancerIds)[0] : null;
 
   const selectedFormation = formations.find(f => f.id === selectedFormationId);
+  useEffect(() => {
+    formationsRef.current = formations;
+  }, [formations]);
+
+  useEffect(() => {
+    selectedFormationIdRef.current = selectedFormationId;
+  }, [selectedFormationId]);
+
   const quickTutorialStep = QUICK_TUTORIAL_STEPS[quickTutorialStepIndex] ?? {
     title: 'Quick Start',
     description: 'Use the controls above to build formations, place dancers, and preview transitions.'
@@ -821,7 +851,8 @@ export default function App() {
   const cloneFormations = (source: Formation[]) => source.map((formation) => ({
     ...formation,
     dancers: formation.dancers.map((dancerPos) => ({ ...dancerPos })),
-    transitionPaths: cloneTransitionPaths(formation.transitionPaths)
+    transitionPaths: cloneTransitionPaths(formation.transitionPaths),
+    preserveEmpty: formation.preserveEmpty
   }));
 
   const cloneDancers = (source: Dancer[]) => source.map((dancer) => ({ ...dancer }));
@@ -979,6 +1010,7 @@ export default function App() {
     setContextMenu(null);
     setFormationDeleteDialog(null);
     undoStackRef.current = [];
+    dancerClipboardRef.current = null;
     setUndoDepth(0);
     setShowAudioUpload(false);
     setAudioTracks([]);
@@ -1048,7 +1080,8 @@ export default function App() {
               }
             ])
           )
-        : undefined
+        : undefined,
+      preserveEmpty: template.preserveEmpty ?? false
     }));
 
     setCurrentProjectId(record.projectId);
@@ -1074,6 +1107,7 @@ export default function App() {
     setContextMenu(null);
     setFormationDeleteDialog(null);
     undoStackRef.current = [];
+    dancerClipboardRef.current = null;
     setUndoDepth(0);
     setShowAudioUpload(false);
     setAudioTracks([]);
@@ -1253,7 +1287,8 @@ export default function App() {
       duration: 170,
       transitionToNextSeconds: DEFAULT_FORMATION_TRANSITION_SECONDS,
       notes: '',
-      dancers: sourceFormation ? sourceFormation.dancers.map((dancerPos) => ({ ...dancerPos })) : []
+      dancers: sourceFormation ? sourceFormation.dancers.map((dancerPos) => ({ ...dancerPos })) : [],
+      preserveEmpty: !sourceFormation || sourceFormation.dancers.length === 0 || !!sourceFormation.preserveEmpty
     };
     setFormations([...formations, newFormation]);
     setSelectedFormationId(newFormation.id);
@@ -1339,7 +1374,8 @@ export default function App() {
       duration: Math.max(50, Math.round(template.duration || 170)),
       transitionToNextSeconds: clampTransitionSeconds(template.transitionToNextSeconds ?? DEFAULT_FORMATION_TRANSITION_SECONDS),
       notes: `Imported from ${template.projectTitle}`,
-      dancers: importedPositions
+      dancers: importedPositions,
+      preserveEmpty: importedPositions.length === 0
     };
 
     if (createdDancers.length > 0) {
@@ -1438,7 +1474,8 @@ export default function App() {
       formation.id === selectedFormationId
         ? {
             ...formation,
-            dancers: [...formation.dancers, { dancerId, x: coords.x, y: coords.y }]
+            dancers: [...formation.dancers, { dancerId, x: coords.x, y: coords.y }],
+            preserveEmpty: false
           }
         : formation
     )));
@@ -1488,7 +1525,8 @@ export default function App() {
       if (f.id === selectedFormationId) {
         return {
           ...f,
-          dancers: [...f.dancers, { dancerId: newDancer.id, x, y }]
+          dancers: [...f.dancers, { dancerId: newDancer.id, x, y }],
+          preserveEmpty: false
         };
       }
       return f;
@@ -1702,42 +1740,115 @@ export default function App() {
       const centerX = safeStageWidth / 2;
       const centerY = safeStageHeight / 2;
       
-      setFormations(formations.map(f => {
-        if (f.id === selectedFormationId) {
-          return {
-            ...f,
-            dancers: [...f.dancers, { dancerId, x: centerX, y: centerY }]
-          };
-        }
-        return f;
+      setFormations((prevFormations) => prevFormations.map((formation) => (
+        formation.id === selectedFormationId
+          ? {
+              ...formation,
+              dancers: [...formation.dancers, { dancerId, x: centerX, y: centerY }],
+              preserveEmpty: false
+            }
+          : formation
+      )));
+    }
+  };
+
+  const copySelectedDancers = () => {
+    if (!selectedFormation || selectedDancerIds.size === 0) return false;
+
+    const copied = selectedFormation.dancers
+      .filter((dancerPos) => selectedDancerIds.has(dancerPos.dancerId))
+      .map((dancerPos) => ({
+        dancerId: dancerPos.dancerId,
+        x: dancerPos.x,
+        y: dancerPos.y
       }));
+
+    if (copied.length === 0) return false;
+
+    dancerClipboardRef.current = {
+      sourceFormationId: selectedFormation.id,
+      sourceFormationName: selectedFormation.name,
+      dancers: copied
+    };
+    return true;
+  };
+
+  const pasteCopiedDancers = () => {
+    const clipboard = dancerClipboardRef.current;
+    if (!clipboard) {
+      setRecordStatus('Copy dancers first before pasting.');
+      return;
+    }
+    if (!selectedFormationId) {
+      setRecordStatus('Select a formation before pasting dancers.');
+      return;
+    }
+    if (clipboard.sourceFormationId === selectedFormationId) {
+      setRecordStatus('Cannot paste dancers into the same formation they were copied from.');
+      return;
+    }
+
+    const targetFormation = formations.find((formation) => formation.id === selectedFormationId);
+    if (!targetFormation) return;
+
+    const existingIds = new Set(targetFormation.dancers.map((dancerPos) => dancerPos.dancerId));
+    const dancersToPaste = clipboard.dancers.filter((dancerPos) => !existingIds.has(dancerPos.dancerId));
+
+    if (dancersToPaste.length === 0) {
+      setRecordStatus('All copied dancers are already in this formation.');
+      return;
+    }
+
+    pushUndoSnapshot();
+    setFormations((prevFormations) => prevFormations.map((formation) => (
+      formation.id === selectedFormationId
+        ? {
+            ...formation,
+            dancers: [...formation.dancers, ...dancersToPaste.map((dancerPos) => ({ ...dancerPos }))],
+            preserveEmpty: false
+          }
+        : formation
+    )));
+    setSelectedDancerIds(new Set(dancersToPaste.map((dancerPos) => dancerPos.dancerId)));
+
+    const skippedCount = clipboard.dancers.length - dancersToPaste.length;
+    if (skippedCount > 0) {
+      setRecordStatus(`Pasted ${dancersToPaste.length} dancer${dancersToPaste.length === 1 ? '' : 's'} into ${targetFormation.name}. Skipped ${skippedCount} already there.`);
+    } else {
+      setRecordStatus(`Pasted ${dancersToPaste.length} dancer${dancersToPaste.length === 1 ? '' : 's'} into ${targetFormation.name}.`);
     }
   };
 
   const handleRemoveDancer = (option: 'all' | 'this' | 'cancel') => {
     if (!removalDialog) return;
+    const targetIds = new Set(removalDialog.dancerIds);
 
     if (option === 'all') {
       pushUndoSnapshot();
       // Remove from all formations
       setFormations((prevFormations) => prevFormations.map((f) => ({
         ...f,
-        dancers: f.dancers.filter((d) => d.dancerId !== removalDialog.dancerId)
+        dancers: f.dancers.filter((d) => !targetIds.has(d.dancerId)),
+        preserveEmpty: f.dancers.some((d) => !targetIds.has(d.dancerId)) ? false : true
       })));
       // Remove from dancers list
-      setDancers((prevDancers) => prevDancers.filter((d) => d.id !== removalDialog.dancerId));
+      setDancers((prevDancers) => prevDancers.filter((d) => !targetIds.has(d.id)));
+      setSelectedDancerIds((prev) => new Set(Array.from(prev).filter((id) => !targetIds.has(id))));
     } else if (option === 'this' && selectedFormationId) {
       pushUndoSnapshot();
       // Remove from current formation only
       setFormations((prevFormations) => prevFormations.map((f) => {
         if (f.id === selectedFormationId) {
+          const remainingDancers = f.dancers.filter((d) => !targetIds.has(d.dancerId));
           return {
             ...f,
-            dancers: f.dancers.filter((d) => d.dancerId !== removalDialog.dancerId)
+            dancers: remainingDancers,
+            preserveEmpty: remainingDancers.length === 0
           };
         }
         return f;
       }));
+      setSelectedDancerIds((prev) => new Set(Array.from(prev).filter((id) => !targetIds.has(id))));
     }
     
     setRemovalDialog(null);
@@ -1803,12 +1914,14 @@ export default function App() {
       return;
     }
 
-    const currentFormation = formations.find(f => f.id === selectedFormationId);
-    const nextFormation = formations.find(f => f.id === id);
+    const latestFormations = formationsRef.current;
+    const currentSelectedFormationId = selectedFormationIdRef.current;
+    const currentFormation = latestFormations.find(f => f.id === currentSelectedFormationId);
+    const nextFormation = latestFormations.find(f => f.id === id);
     
     if (!currentFormation || !nextFormation) {
       setSelectedFormationId(id);
-      setPreviousFormationId(selectedFormationId);
+      setPreviousFormationId(currentSelectedFormationId);
       setSelectedDancerIds(new Set());
       return;
     }
@@ -1818,21 +1931,22 @@ export default function App() {
       !isPlaying &&
       !isRecording &&
       currentFormation.dancers.length > 0 &&
-      nextFormation.dancers.length === 0;
+      nextFormation.dancers.length === 0 &&
+      !nextFormation.preserveEmpty;
 
     if (shouldCarryDancersIntoEmptyFormation) {
       const carriedDancers = currentFormation.dancers.map((dancerPos) => ({ ...dancerPos }));
       pushUndoSnapshot();
       setFormations((prevFormations) => prevFormations.map((formation) => (
         formation.id === id
-          ? { ...formation, dancers: carriedDancers }
+          ? { ...formation, dancers: carriedDancers, preserveEmpty: false }
           : formation
       )));
-      resolvedNextFormation = { ...nextFormation, dancers: carriedDancers };
+      resolvedNextFormation = { ...nextFormation, dancers: carriedDancers, preserveEmpty: false };
     }
 
-    const currentIndex = formations.findIndex(f => f.id === selectedFormationId);
-    const nextIndex = formations.findIndex(f => f.id === id);
+    const currentIndex = latestFormations.findIndex(f => f.id === currentSelectedFormationId);
+    const nextIndex = latestFormations.findIndex(f => f.id === id);
 
     const transitionMs = nextIndex === currentIndex + 1
       ? getTransitionMsForDivider(currentIndex)
@@ -1905,7 +2019,7 @@ export default function App() {
       setDancerAnimations(animations);
       setIsAnimating(true);
       setManualTransitionProgress(0);
-      setPreviousFormationId(selectedFormationId);
+      setPreviousFormationId(currentSelectedFormationId);
       setSelectedFormationId(id);
       manualTransitionStartRef.current = performance.now();
       manualTransitionDurationRef.current = transitionMs;
@@ -1942,7 +2056,7 @@ export default function App() {
       setIsAnimating(false);
       setManualTransitionProgress(0);
       setDancerAnimations([]);
-      setPreviousFormationId(selectedFormationId);
+      setPreviousFormationId(currentSelectedFormationId);
       setSelectedFormationId(id);
     }
     setSelectedDancerIds(new Set());
@@ -2740,7 +2854,9 @@ export default function App() {
 
   const handleNotesChange = (newNotes: string) => {
     if (selectedFormationId) {
-      setFormations(formations.map(f => f.id === selectedFormationId ? { ...f, notes: newNotes } : f));
+      setFormations((prevFormations) => prevFormations.map((formation) => (
+        formation.id === selectedFormationId ? { ...formation, notes: newNotes } : formation
+      )));
     }
   };
 
@@ -2750,9 +2866,9 @@ export default function App() {
 
   const setFormationDurationById = (formationId: string, nextDuration: number) => {
     const clampedDuration = Math.max(50, Math.round(nextDuration));
-    setFormations(formations.map((f) =>
-      f.id === formationId ? { ...f, duration: clampedDuration } : f
-    ));
+    setFormations((prevFormations) => prevFormations.map((formation) => (
+      formation.id === formationId ? { ...formation, duration: clampedDuration } : formation
+    )));
   };
 
   const adjustSelectedFormationDuration = (delta: number) => {
@@ -3003,6 +3119,7 @@ export default function App() {
         notes: formation.notes,
         dancerCount: savedDancers.length,
         dancers: savedDancers,
+        preserveEmpty: formation.preserveEmpty ?? false,
         transitionPaths: formation.transitionPaths
           ? Object.fromEntries(
               Object.entries(formation.transitionPaths).map(([dancerId, path]) => [
@@ -3019,7 +3136,7 @@ export default function App() {
           : undefined,
         updatedAt: now
       };
-    }).filter((formation) => formation.dancerCount > 0);
+    });
 
     const currentProjectRecord: ProjectLibraryRecord = {
       projectId: currentProjectId,
@@ -3167,6 +3284,8 @@ export default function App() {
       if (showQuickTutorial || showHelpDialog || showSettingsDialog) return;
 
       const isDeleteKey = e.key === 'Delete' || e.key === 'Backspace';
+      const isCopy = (e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'c';
+      const isPaste = (e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'v';
 
       // Confirm formation deletion when dialog is open
       if (!isTypingTarget && formationDeleteDialog && (isDeleteKey || e.key === 'Enter')) {
@@ -3182,13 +3301,41 @@ export default function App() {
         return;
       }
 
+      if (!isTypingTarget && isCopy) {
+        e.preventDefault();
+        if (copySelectedDancers()) {
+          setRecordStatus(`Copied ${selectedDancerIds.size} dancer${selectedDancerIds.size === 1 ? '' : 's'}.`);
+        } else {
+          setRecordStatus('Select at least one dancer to copy.');
+        }
+        return;
+      }
+
+      if (!isTypingTarget && isPaste) {
+        e.preventDefault();
+        pasteCopiedDancers();
+        return;
+      }
+
       if (!isTypingTarget && isDeleteKey) {
         // Delete selected dancers first (if any are selected in the current formation)
         if (selectedDancerIds.size > 0 && selectedFormationId && !removalDialog) {
           e.preventDefault();
           const firstId = Array.from(selectedDancerIds)[0];
           const dancer = dancers.find(d => d.id === firstId);
-          if (dancer) setRemovalDialog({ dancerId: dancer.id, dancerName: dancer.name });
+          if (dancer) {
+            const selectedIds = Array.from(selectedDancerIds);
+            const targetIds = selectedIds.length > 1 ? selectedIds : [dancer.id];
+            const targetDancers = targetIds
+              .map((id) => dancers.find((candidate) => candidate.id === id))
+              .filter((value): value is Dancer => value != null);
+            if (targetDancers.length > 0) {
+              setRemovalDialog({
+                dancerIds: targetDancers.map((target) => target.id),
+                dancerNames: targetDancers.map((target) => target.name)
+              });
+            }
+          }
           return;
         }
         // Otherwise open formation delete dialog
@@ -3208,7 +3355,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedFormationId, selectedDancerIds, dancers, formationDeleteDialog, removalDialog, showQuickTutorial, showHelpDialog, showSettingsDialog]);
+  }, [selectedFormationId, selectedDancerIds, dancers, formationDeleteDialog, removalDialog, showQuickTutorial, showHelpDialog, showSettingsDialog, selectedFormation, formations]);
 
   // Keep playheadTimeRef in sync for drag handlers
   useEffect(() => { playheadTimeRef.current = playheadTime; }, [playheadTime]);
@@ -3728,7 +3875,7 @@ export default function App() {
                         </button>
                         <button
                           className="w-5 h-5 flex items-center justify-center hover:bg-[#444] rounded transition-colors"
-                          onClick={() => setRemovalDialog({ dancerId: dancer.id, dancerName: dancer.name })}
+                          onClick={() => setRemovalDialog({ dancerIds: [dancer.id], dancerNames: [dancer.name] })}
                           title="Remove dancer from this formation or all formations"
                         >
                           <Minus size={12} className="text-[#888]" />
@@ -4715,7 +4862,11 @@ export default function App() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-[#2a2a2a] border border-[#3a3a3a] rounded-[12px] p-6 min-w-[320px]">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-white text-[16px] font-medium">Remove {removalDialog.dancerName} from:</h3>
+              <h3 className="text-white text-[16px] font-medium">
+                {removalDialog.dancerIds.length === 1
+                  ? `Remove ${removalDialog.dancerNames[0]} from:`
+                  : `Remove ${removalDialog.dancerIds.length} selected dancers from:`}
+              </h3>
               <button 
                 onClick={() => setRemovalDialog(null)}
                 className="text-[#888] hover:text-white transition-colors"
@@ -4724,11 +4875,16 @@ export default function App() {
                 <X size={18} />
               </button>
             </div>
+            {removalDialog.dancerIds.length > 1 && (
+              <p className="text-[#999] text-[13px] mb-4 leading-relaxed">
+                {removalDialog.dancerNames.join(', ')}
+              </p>
+            )}
             <div className="flex flex-col gap-2">
               <button
                 onClick={() => handleRemoveDancer('all')}
                 className="bg-[#1d1d1d] hover:bg-[#333] text-white px-4 py-2.5 rounded-[8px] text-[14px] transition-colors"
-                title="Remove this dancer from all formations"
+                title={removalDialog.dancerIds.length === 1 ? 'Remove this dancer from all formations' : 'Remove all selected dancers from all formations'}
               >
                 All formations
               </button>
@@ -4736,7 +4892,7 @@ export default function App() {
                 onClick={() => handleRemoveDancer('this')}
                 className="bg-[#1d1d1d] hover:bg-[#333] text-white px-4 py-2.5 rounded-[8px] text-[14px] transition-colors"
                 disabled={!selectedFormationId}
-                title="Remove this dancer only from the selected formation"
+                title={removalDialog.dancerIds.length === 1 ? 'Remove this dancer only from the selected formation' : 'Remove all selected dancers only from the selected formation'}
               >
                 This formation only
               </button>
