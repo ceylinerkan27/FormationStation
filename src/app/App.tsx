@@ -3502,9 +3502,27 @@ export default function App() {
 
   // Custom tooltip renderer for environments where native title tooltips may not appear.
   useEffect(() => {
+    const TOOLTIP_ATTR = 'data-tooltip';
+
+    const migrateTitleToTooltipAttr = (element: HTMLElement) => {
+      const titleText = element.getAttribute('title');
+      if (!titleText) return;
+      if (!element.getAttribute(TOOLTIP_ATTR)) {
+        element.setAttribute(TOOLTIP_ATTR, titleText);
+      }
+      element.removeAttribute('title');
+    };
+
+    const getTooltipText = (element: HTMLElement) => element.getAttribute(TOOLTIP_ATTR);
+
     const findTooltipElement = (target: EventTarget | null) => {
       if (!(target instanceof HTMLElement)) return null;
-      return target.closest<HTMLElement>('[title]');
+      const element = target.closest<HTMLElement>(`[${TOOLTIP_ATTR}], [title]`);
+      if (!element) return null;
+      if (element.hasAttribute('title')) {
+        migrateTitleToTooltipAttr(element);
+      }
+      return element.hasAttribute(TOOLTIP_ATTR) ? element : null;
     };
 
     const clampTooltipPosition = (rawX: number, rawY: number) => {
@@ -3525,7 +3543,7 @@ export default function App() {
     };
 
     const showTooltipAtPointer = (element: HTMLElement, clientX: number, clientY: number) => {
-      const text = element.getAttribute('title');
+      const text = getTooltipText(element);
       if (!text) {
         hideTooltip();
         return;
@@ -3571,7 +3589,7 @@ export default function App() {
     const handleFocusIn = (event: FocusEvent) => {
       const element = findTooltipElement(event.target);
       if (!element) return;
-      const text = element.getAttribute('title');
+      const text = getTooltipText(element);
       if (!text) return;
       const rect = element.getBoundingClientRect();
       tooltipTargetRef.current = element;
@@ -3595,6 +3613,8 @@ export default function App() {
     const handleScroll = () => {
       if (tooltipTargetRef.current) hideTooltip();
     };
+
+    document.querySelectorAll<HTMLElement>('[title]').forEach(migrateTitleToTooltipAttr);
 
     document.addEventListener('mouseover', handleMouseOver);
     document.addEventListener('mousemove', handleMouseMove);
@@ -4128,7 +4148,6 @@ export default function App() {
                 onDragOver={handleStageDragOver}
                 onDragLeave={handleStageDragLeave}
                 onDrop={handleStageDrop}
-                title={isPathEditMode ? 'Path edit mode: select a dancer to edit transition path handles.' : 'Click empty stage to add dancers. Drag dancers to reposition them.'}
               >
                 {/* Vertical gridlines */}
                 {Array.from({ length: stageConfig.verticalGridLines }, (_, idx) => idx + 1).map((line) => (
@@ -4383,7 +4402,6 @@ export default function App() {
                     onClick={() => handleFormationClick(formation.id)}
                     onDoubleClick={() => handleFormationDoubleClick(formation.id)}
                     onContextMenu={(e) => handleFormationContextMenu(e, formation.id)}
-                    title="Click to select. Double-click to rename. Drag block to reorder."
                   >
                     {editingFormationId === formation.id ? (
                       <input
