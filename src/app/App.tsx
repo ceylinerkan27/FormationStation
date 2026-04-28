@@ -4148,6 +4148,7 @@ export default function App() {
                 onDragOver={handleStageDragOver}
                 onDragLeave={handleStageDragLeave}
                 onDrop={handleStageDrop}
+                data-tooltip={isPathEditMode ? 'Path edit mode: select a dancer to edit transition path handles.' : 'Click empty stage to add dancers. Drag dancers to reposition them.'}
               >
                 {/* Vertical gridlines */}
                 {Array.from({ length: stageConfig.verticalGridLines }, (_, idx) => idx + 1).map((line) => (
