@@ -1201,10 +1201,11 @@ export default function App() {
   };
 
   // Timeline duration: use audio duration if available, else derive from formations or default
-  const formationSpanPx = formations.length > 0
-    ? 40 + formations.reduce((s, f) => s + f.duration, 0)
+  const formationSpanUnits = formations.length > 0
+    ? formations.reduce((s, f) => s + f.duration, 0)
     : 0;
-  const formationBasedDuration = Math.max(60, timelineContainerWidth > 0 ? (formationSpanPx / timelineContainerWidth) * 60 : 60);
+  const availableTimelineWidth = Math.max(1, timelineContainerWidth - 40);
+  const formationBasedDuration = Math.max(60, timelineContainerWidth > 40 ? (formationSpanUnits / availableTimelineWidth) * 60 : 60);
   const audioBasedDuration = audioTracks.length > 0
     ? Math.max(0.1, audioTracks.reduce((sum, t) => sum + (t.trimEnd - t.trimStart), 0))
     : 0;
@@ -2168,6 +2169,7 @@ export default function App() {
     audioContextRef.current = null;
     cancelAnimationFrame(playbackFrameRef.current);
     setIsPlaying(false);
+    playStartHeadRef.current = playheadTimeRef.current;
   };
 
   const stopRecording = () => {
@@ -2195,13 +2197,18 @@ export default function App() {
 
   const getFormationTimelineForDuration = (duration: number, containerWidth = timelineContainerWidth) => {
     if (formations.length === 0) return [];
+    const safeDuration = Math.max(0.1, duration);
+    const availableWidth = containerWidth - 40;
+    const effectiveScale = formationBasedDuration / safeDuration;
 
-    // Match playback timing math exactly (based on timeline viewport width).
-    if (containerWidth > 40) {
+    // Match formation block rendering exactly, including compression when audio extends the timeline.
+    if (availableWidth > 0) {
       return formations.map((formation, index) => {
-        const leftPx = 40 + formations.slice(0, index).reduce((sum, prev) => sum + prev.duration, 0);
-        const start = ((leftPx - 40) / (containerWidth - 40)) * duration;
-        const segmentDuration = (formation.duration / (containerWidth - 40)) * duration;
+        const precedingWidth = formations.slice(0, index).reduce((sum, prev) => sum + prev.duration, 0);
+        const leftPx = 40 + precedingWidth * effectiveScale;
+        const scaledWidth = formation.duration * effectiveScale;
+        const start = ((leftPx - 40) / availableWidth) * safeDuration;
+        const segmentDuration = (scaledWidth / availableWidth) * safeDuration;
         const end = start + segmentDuration;
         return { formation, index, start, end, segmentDuration };
       });
@@ -2212,8 +2219,8 @@ export default function App() {
     const safeTotalUnits = totalUnits > 0 ? totalUnits : 1;
     let cursor = 0;
     return formations.map((formation, index) => {
-      const start = (cursor / safeTotalUnits) * duration;
-      const segmentDuration = (formation.duration / safeTotalUnits) * duration;
+      const start = (cursor / safeTotalUnits) * safeDuration;
+      const segmentDuration = (formation.duration / safeTotalUnits) * safeDuration;
       const end = start + segmentDuration;
       cursor += formation.duration;
       return { formation, index, start, end, segmentDuration };
@@ -2594,8 +2601,10 @@ export default function App() {
       return;
     }
 
-    const startFrom = playheadTime >= timelineDuration ? 0 : playheadTime;
-    if (startFrom === 0) setPlayheadTime(0);
+    const startFrom = playheadTimeRef.current >= timelineDuration ? 0 : playheadTimeRef.current;
+    setPlayheadTime(startFrom);
+    playheadTimeRef.current = startFrom;
+    checkFormationRef.current(startFrom);
 
     // Start audio tracks sequentially
     if (audioTracks.length > 0) {
@@ -2637,6 +2646,7 @@ export default function App() {
       const elapsed = (performance.now() - playStartWallRef.current) / 1000;
       const newTime = playStartHeadRef.current + elapsed;
       setPlayheadTime(newTime);
+      playheadTimeRef.current = newTime;
       checkFormationRef.current(newTime);
       if (newTime < timelineDuration) {
         playbackFrameRef.current = requestAnimationFrame(tick);
@@ -2644,6 +2654,7 @@ export default function App() {
         cancelAnimationFrame(playbackFrameRef.current);
         setIsPlaying(false);
         setPlayheadTime(0);
+        playheadTimeRef.current = 0;
       }
     };
     playbackFrameRef.current = requestAnimationFrame(tick);
