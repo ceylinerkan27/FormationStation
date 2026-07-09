@@ -9,6 +9,7 @@ interface DancerAnimation {
   endX: number;
   endY: number;
   type: 'move' | 'exit' | 'enter';
+  color: string;
   exitDirection?: 'left' | 'right' | 'top' | 'bottom';
   enterDirection?: 'left' | 'right' | 'top' | 'bottom';
   path?: DancerPath;
@@ -45,6 +46,7 @@ interface DancerPosition {
   dancerId: string;
   x: number;
   y: number;
+  color?: string;
 }
 
 interface DraggedDancerState {
@@ -166,6 +168,7 @@ interface ProjectLibraryRecord {
   updatedAt: number;
   formations: LibraryFormationTemplate[];
   transitionSeconds?: number;
+  stageConfig?: StageConfig;
   // Legacy single-track fields kept for backwards-compat reads
   audioFileName?: string;
   audioData?: string;
@@ -184,16 +187,43 @@ function HomeScreen({
   onOpenProject,
   onDeleteProject,
   onRenameProject,
+  onExportProject,
+  onImportProject,
 }: {
   projects: ProjectLibraryRecord[];
   onNewProject: () => void;
   onOpenProject: (record: ProjectLibraryRecord) => void;
   onDeleteProject: (projectId: string) => void;
   onRenameProject: (projectId: string, newTitle: string) => void;
+  onExportProject: (projectId: string) => void;
+  onImportProject: (record: ProjectLibraryRecord) => Promise<void>;
 }) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
+
+  const handleImportFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target?.result as string);
+        if (!parsed || typeof parsed !== 'object' || !parsed.projectId || !Array.isArray(parsed.formations)) {
+          setImportError('Invalid project file.');
+          return;
+        }
+        void onImportProject(parsed as ProjectLibraryRecord);
+        setImportError(null);
+      } catch {
+        setImportError('Could not read file. Make sure it is a valid .fsp.json project file.');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
 
   const startRename = (record: ProjectLibraryRecord, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -233,6 +263,14 @@ function HomeScreen({
           <span className="text-[#888] text-[12px]">{projects.length} project{projects.length !== 1 ? 's' : ''}</span>
         </div>
 
+        <input
+          ref={importFileRef}
+          type="file"
+          accept=".json,.fsp.json"
+          className="hidden"
+          onChange={handleImportFileChange}
+        />
+
         <div className="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-4">
           {/* New Project Card */}
           <button
@@ -245,6 +283,23 @@ function HomeScreen({
             </div>
             <span className="text-[#888] group-hover:text-[#b4b1b1] text-[14px] font-medium transition-colors">New Project</span>
           </button>
+
+          {/* Import Project Card */}
+          <button
+            onClick={() => importFileRef.current?.click()}
+            className="group bg-[#252525] border-2 border-dashed border-[#3a3a3a] hover:border-[#4a7c59] hover:bg-[#2a2a2a] rounded-[12px] p-6 flex flex-col items-center justify-center gap-3 transition-all min-h-[152px] cursor-pointer"
+            title="Import a project from a .fsp.json file"
+          >
+            <div className="w-10 h-10 rounded-full bg-[#2e2e2e] group-hover:bg-[#4a7c59] flex items-center justify-center transition-colors">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[#888] group-hover:text-white transition-colors">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+            </div>
+            <span className="text-[#888] group-hover:text-[#b4b1b1] text-[14px] font-medium transition-colors">Import Project</span>
+          </button>
+          {importError && <p className="col-span-full text-[#e03535] text-[13px] mt-1">{importError}</p>}
 
           {/* Existing Project Cards */}
           {projects.map((record) => (
@@ -267,6 +322,17 @@ function HomeScreen({
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
                       <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onExportProject(record.projectId); }}
+                    className="w-7 h-7 flex items-center justify-center rounded-[6px] hover:bg-[#3a3a3a] transition-colors"
+                    title="Export to file"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
                     </svg>
                   </button>
                   <button
@@ -633,13 +699,10 @@ export default function App() {
   const activePathPreviewDancerId = selectedDancerIds.size === 1 ? Array.from(selectedDancerIds)[0] : null;
 
   const selectedFormation = formations.find(f => f.id === selectedFormationId);
-  useEffect(() => {
-    formationsRef.current = formations;
-  }, [formations]);
-
-  useEffect(() => {
-    selectedFormationIdRef.current = selectedFormationId;
-  }, [selectedFormationId]);
+  // Keep refs in sync during render (not via useEffect) so event handlers and RAF
+  // callbacks always read the latest committed values without an async delay.
+  formationsRef.current = formations;
+  selectedFormationIdRef.current = selectedFormationId;
 
   const quickTutorialStep = QUICK_TUTORIAL_STEPS[quickTutorialStepIndex] ?? {
     title: 'Quick Start',
@@ -1055,6 +1118,7 @@ export default function App() {
     const reconstructedDancers = Array.from(dancerMap.values()).sort((a, b) => a.number - b.number);
 
     // Reconstruct formations with absolute positions from stored ratios
+    const loadedStageConfig: StageConfig = record.stageConfig ?? DEFAULT_STAGE_CONFIG;
     const reconstructedFormations: Formation[] = record.formations.map((template) => ({
       id: template.formationId,
       name: template.formationName,
@@ -1064,8 +1128,9 @@ export default function App() {
       notes: template.notes ?? '',
       dancers: template.dancers.map((d) => ({
         dancerId: d.sourceDancerId,
-        x: d.xRatio * DEFAULT_STAGE_CONFIG.width,
-        y: d.yRatio * DEFAULT_STAGE_CONFIG.height,
+        x: d.xRatio * loadedStageConfig.width,
+        y: d.yRatio * loadedStageConfig.height,
+        color: d.color,
       })),
       transitionPaths: template.transitionPaths
         ? Object.fromEntries(
@@ -1074,8 +1139,8 @@ export default function App() {
               {
                 type: path.type,
                 controlPoints: path.controlPoints.map((point) => ({
-                  x: point.xRatio * DEFAULT_STAGE_CONFIG.width,
-                  y: point.yRatio * DEFAULT_STAGE_CONFIG.height
+                  x: point.xRatio * loadedStageConfig.width,
+                  y: point.yRatio * loadedStageConfig.height
                 }))
               }
             ])
@@ -1103,6 +1168,8 @@ export default function App() {
     setShowPeopleDropdown(false);
     setRemovalDialog(null);
     setProjectTitle(record.projectTitle);
+    setStageConfig(loadedStageConfig);
+    setSettingsDraft(loadedStageConfig);
     setEditingProjectTitle(false);
     setContextMenu(null);
     setFormationDeleteDialog(null);
@@ -1119,8 +1186,6 @@ export default function App() {
     setPlayheadTime(0);
     playheadTimeRef.current = 0;
     setIsDraggingPlayhead(false);
-    setStageConfig(DEFAULT_STAGE_CONFIG);
-    setSettingsDraft(DEFAULT_STAGE_CONFIG);
     setShowSettingsDialog(false);
     setShowHelpDialog(false);
     setShowQuickTutorial(false);
@@ -1200,6 +1265,39 @@ export default function App() {
     });
   };
 
+  const handleExportProject = async (projectId: string) => {
+    const record = projectLibrary.find((p) => p.projectId === projectId);
+    if (!record) return;
+    const audioTracksWithData = await readPersistedProjectAudioTracks(projectId);
+    const exportRecord = { ...record, audioTracks: audioTracksWithData ?? record.audioTracks };
+    const blob = new Blob([JSON.stringify(exportRecord, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${record.projectTitle.replace(/[^a-z0-9_\- ]/gi, '_')}.fsp.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportProject = async (record: ProjectLibraryRecord) => {
+    const newProjectId = createProjectId();
+    const tracksWithData = record.audioTracks?.filter((t) => t.audioData);
+    if (tracksWithData && tracksWithData.length > 0) {
+      await persistProjectAudioTracks(newProjectId, tracksWithData);
+    }
+    const newRecord: ProjectLibraryRecord = {
+      ...record,
+      projectId: newProjectId,
+      updatedAt: Date.now(),
+      audioTracks: record.audioTracks?.map(({ audioData: _d, ...track }) => track),
+    };
+    setProjectLibrary((prev) => {
+      const next = [newRecord, ...prev.filter((p) => p.projectId !== newProjectId)].slice(0, PROJECT_LIBRARY_MAX_PROJECTS);
+      try { window.localStorage.setItem(PROJECT_LIBRARY_STORAGE_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+
   // Timeline duration: use audio duration if available, else derive from formations or default
   const formationSpanUnits = formations.length > 0
     ? formations.reduce((s, f) => s + f.duration, 0)
@@ -1212,9 +1310,10 @@ export default function App() {
   // Timeline extends to whichever is longer; freeze during a trim drag so markers don't move
   const computedTimelineDuration = Math.max(formationBasedDuration, audioBasedDuration);
   const timelineDuration = trimmingTrack?.frozenTimelineDuration ?? computedTimelineDuration;
-  // If audio extends the timeline, compress formation rendering proportionally so they
-  // stay at the same time-positions relative to the time markers.
-  const scaleFactor = formationBasedDuration / timelineDuration;
+  // Scale formations so 1 formation-unit = 1px at 60s baseline. When audio (or many formations)
+  // extend the timeline, compress proportionally. Using the constant 60 (not formationBasedDuration)
+  // keeps the scale stable when formations are added/removed while audio is present.
+  const scaleFactor = 60 / timelineDuration;
   scaleFactorRef.current = scaleFactor;
 
   function getTimeInterval(secs: number): number {
@@ -1721,12 +1820,28 @@ export default function App() {
   };
 
   const handleDancerColorChange = (dancerId: string, newColor: string) => {
+    if (!selectedFormationId) return;
     const targetIds = selectedDancerIds.has(dancerId) ? selectedDancerIds : new Set([dancerId]);
-    const dancersToUpdate = dancers.filter((d) => targetIds.has(d.id));
-    if (dancersToUpdate.length === 0 || dancersToUpdate.every((d) => d.color === newColor)) return;
+
+    const currentFormation = formations.find((f) => f.id === selectedFormationId);
+    if (!currentFormation) return;
+
+    const dancerMap = new Map(dancers.map((d) => [d.id, d]));
+    const relevantPositions = currentFormation.dancers.filter((p) => targetIds.has(p.dancerId));
+    if (relevantPositions.length === 0) return;
+    if (relevantPositions.every((p) => (p.color ?? dancerMap.get(p.dancerId)?.color) === newColor)) {
+      console.log('[ColorChange] EARLY EXIT — effective color already matches', newColor, 'for', relevantPositions.map(p => ({ dancerId: p.dancerId, 'DancerPosition.color': p.color, 'Dancer.color': dancerMap.get(p.dancerId)?.color })));
+      return;
+    }
 
     pushUndoSnapshot();
-    setDancers(dancers.map((d) => (targetIds.has(d.id) ? { ...d, color: newColor } : d)));
+    const targetFormationId = selectedFormationId;
+    console.log('[ColorChange] Setting', newColor, 'on formation', targetFormationId, 'for', [...targetIds]);
+    setFormations((prev) => prev.map((f) =>
+      f.id === targetFormationId
+        ? { ...f, dancers: f.dancers.map((p) => targetIds.has(p.dancerId) ? { ...p, color: newColor } : p) }
+        : f
+    ));
   };
 
   const handleDancerClickInDropdown = (dancerId: string) => {
@@ -1761,7 +1876,8 @@ export default function App() {
       .map((dancerPos) => ({
         dancerId: dancerPos.dancerId,
         x: dancerPos.x,
-        y: dancerPos.y
+        y: dancerPos.y,
+        color: dancerPos.color
       }));
 
     if (copied.length === 0) return false;
@@ -1957,15 +2073,29 @@ export default function App() {
     // Only animate if clicking the directly next formation
     if (shouldAnimate) {
       const animations: DancerAnimation[] = [];
-      
+
       // Get dancer IDs in current and next formations
       const currentDancerIds = new Set(currentFormation.dancers.map(d => d.dancerId));
       const nextDancerIds = new Set(resolvedNextFormation.dancers.map(d => d.dancerId));
-      
+
+      const dancerById = new Map(dancers.map(d => [d.id, d]));
+
+      // DEBUG: log animation color sources
+      console.group(`[FormationAnim] ${currentFormation.name} → ${resolvedNextFormation.name}`);
+      console.log('currentFormation id:', currentFormation.id, 'name:', currentFormation.name);
+      console.log('dancers in currentFormation:', currentFormation.dancers.map(p => ({
+        dancerId: p.dancerId,
+        'DancerPosition.color': p.color,
+        'Dancer.color (fallback)': dancerById.get(p.dancerId)?.color,
+        'resolved animation color': p.color ?? dancerById.get(p.dancerId)?.color ?? '#8b72be'
+      })));
+      console.groupEnd();
+
       // Dancers moving between formations
       currentFormation.dancers.forEach(dancerPos => {
+        const dancer = dancerById.get(dancerPos.dancerId);
         if (nextDancerIds.has(dancerPos.dancerId)) {
-          // Dancer exists in both - animate to new position
+          // Dancer exists in both - animate to new position, keep previous formation color
           const nextPos = resolvedNextFormation.dancers.find(d => d.dancerId === dancerPos.dancerId);
           if (nextPos) {
             animations.push({
@@ -1975,6 +2105,7 @@ export default function App() {
               endX: nextPos.x,
               endY: nextPos.y,
               type: 'move',
+              color: dancerPos.color ?? dancer?.color ?? '#8b72be',
               path: getTransitionPathForDancer(
                 currentFormation,
                 dancerPos.dancerId,
@@ -1984,7 +2115,7 @@ export default function App() {
             });
           }
         } else {
-          // Dancer only in current - exit animation
+          // Dancer only in current - exit animation, keep previous formation color
           const edge = getNearestEdge(dancerPos.x, dancerPos.y);
           const exitPos = getExitPosition(dancerPos.x, dancerPos.y, edge);
           animations.push({
@@ -1994,14 +2125,16 @@ export default function App() {
             endX: exitPos.x,
             endY: exitPos.y,
             type: 'exit',
+            color: dancerPos.color ?? dancer?.color ?? '#8b72be',
             exitDirection: edge
           });
         }
       });
-      
-      // Dancers entering (in next but not in current)
+
+      // Dancers entering (in next but not in current) - use next formation color
       resolvedNextFormation.dancers.forEach(dancerPos => {
         if (!currentDancerIds.has(dancerPos.dancerId)) {
+          const dancer = dancerById.get(dancerPos.dancerId);
           const edge = getNearestEdge(dancerPos.x, dancerPos.y);
           const enterPos = getEnterPosition(dancerPos.x, dancerPos.y, edge);
           animations.push({
@@ -2011,6 +2144,7 @@ export default function App() {
             endX: dancerPos.x,
             endY: dancerPos.y,
             type: 'enter',
+            color: dancerPos.color ?? dancer?.color ?? '#8b72be',
             enterDirection: edge
           });
         }
@@ -2199,7 +2333,7 @@ export default function App() {
     if (formations.length === 0) return [];
     const safeDuration = Math.max(0.1, duration);
     const availableWidth = containerWidth - 40;
-    const effectiveScale = formationBasedDuration / safeDuration;
+    const effectiveScale = 60 / safeDuration;
 
     // Match formation block rendering exactly, including compression when audio extends the timeline.
     if (availableWidth > 0) {
@@ -2227,7 +2361,7 @@ export default function App() {
     });
   };
 
-  type RenderDancer = { x: number; y: number; opacity: number };
+  type RenderDancer = { x: number; y: number; opacity: number; color?: string };
 
   const getTimelineIndexAtTime = (time: number, timeline: ReturnType<typeof getFormationTimelineForDuration>) => {
     if (timeline.length === 0) return -1;
@@ -2250,14 +2384,14 @@ export default function App() {
     const previous = safeIndex > 0 ? timeline[safeIndex - 1] : null;
 
     if (!previous || current.segmentDuration <= 0) {
-      return current.formation.dancers.map((pos) => ({ dancerId: pos.dancerId, x: pos.x, y: pos.y, opacity: 1 }));
+      return current.formation.dancers.map((pos) => ({ dancerId: pos.dancerId, x: pos.x, y: pos.y, opacity: 1, color: pos.color }));
     }
 
     const localTime = Math.max(0, time - current.start);
     const transitionSeconds = getTransitionSecondsForDivider(previous.index);
     const transitionDuration = Math.min(transitionSeconds, current.segmentDuration);
     if (transitionDuration <= 0 || localTime >= transitionDuration) {
-      return current.formation.dancers.map((pos) => ({ dancerId: pos.dancerId, x: pos.x, y: pos.y, opacity: 1 }));
+      return current.formation.dancers.map((pos) => ({ dancerId: pos.dancerId, x: pos.x, y: pos.y, opacity: 1, color: pos.color }));
     }
 
     const t = transitionDuration === 0 ? 1 : localTime / transitionDuration;
@@ -2277,7 +2411,8 @@ export default function App() {
           dancerId,
           x: point.x,
           y: point.y,
-          opacity: 1
+          opacity: 1,
+          color: prevPos.color  // use source formation color during transition
         });
         return;
       }
@@ -2289,7 +2424,8 @@ export default function App() {
           dancerId,
           x: prevPos.x + (exitPos.x - prevPos.x) * t,
           y: prevPos.y + (exitPos.y - prevPos.y) * t,
-          opacity: 1 - t
+          opacity: 1 - t,
+          color: prevPos.color
         });
         return;
       }
@@ -2301,7 +2437,8 @@ export default function App() {
           dancerId,
           x: enterPos.x + (currentPos.x - enterPos.x) * t,
           y: enterPos.y + (currentPos.y - enterPos.y) * t,
-          opacity: t
+          opacity: t,
+          color: currentPos.color
         });
       }
     });
@@ -2342,14 +2479,14 @@ export default function App() {
     }
 
     const dancersToRender = getRenderDancersAtTime(time, timeline);
-    dancersToRender.forEach(({ dancerId, x, y, opacity }) => {
+    dancersToRender.forEach(({ dancerId, x, y, opacity, color }) => {
       const dancer = dancers.find((d) => d.id === dancerId);
       if (!dancer) return;
 
       ctx.save();
       ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
 
-      ctx.fillStyle = dancer.color;
+      ctx.fillStyle = color ?? dancer.color;
       ctx.beginPath();
       ctx.arc(x, y, 25, 0, Math.PI * 2);
       ctx.fill();
@@ -3112,7 +3249,7 @@ export default function App() {
         return {
           sourceDancerId: dancerPos.dancerId,
           name: dancerMeta?.name ?? `Dancer ${fallbackNumber}`,
-          color: dancerMeta?.color ?? DANCER_COLOR_PALETTE[fallbackNumber % DANCER_COLOR_PALETTE.length],
+          color: dancerPos.color ?? dancerMeta?.color ?? DANCER_COLOR_PALETTE[fallbackNumber % DANCER_COLOR_PALETTE.length],
           number: fallbackNumber,
           xRatio: safeStageWidth > 0 ? Math.max(0, Math.min(1, dancerPos.x / safeStageWidth)) : 0,
           yRatio: safeStageHeight > 0 ? Math.max(0, Math.min(1, dancerPos.y / safeStageHeight)) : 0
@@ -3156,6 +3293,7 @@ export default function App() {
       formations: savedFormations,
       // Legacy project-level transition value retained for backwards compatibility.
       transitionSeconds: DEFAULT_FORMATION_TRANSITION_SECONDS,
+      stageConfig,
       audioTracks: audioTracks.length > 0
         ? audioTracks.map(({ audioData: _audioData, ...track }) => track)
         : undefined,
@@ -3454,15 +3592,12 @@ export default function App() {
               y: animation.startY + (animation.endY - animation.startY) * manualTransitionProgress
             };
 
-        const opacity = animation.type === 'exit'
-          ? 1 - manualTransitionProgress
-          : animation.type === 'enter'
-            ? manualTransitionProgress
-            : 1;
+        const opacity = 1;
 
         return {
           key: `${animation.type}-${animation.dancerId}`,
           dancer,
+          color: animation.color,
           dancerId: animation.dancerId,
           x: point.x,
           y: point.y,
@@ -3472,6 +3607,7 @@ export default function App() {
       }).filter((value): value is {
         key: string;
         dancer: Dancer;
+        color: string;
         dancerId: string;
         x: number;
         y: number;
@@ -3485,6 +3621,7 @@ export default function App() {
         return {
           key: dancerPos.dancerId,
           dancer,
+          color: dancerPos.color ?? dancer.color,
           dancerId: dancer.id,
           x: dancerPos.x,
           y: dancerPos.y,
@@ -3494,6 +3631,7 @@ export default function App() {
       }).filter((value): value is {
         key: string;
         dancer: Dancer;
+        color: string;
         dancerId: string;
         x: number;
         y: number;
@@ -3653,6 +3791,8 @@ export default function App() {
         onOpenProject={handleOpenExistingProject}
         onDeleteProject={handleDeleteProject}
         onRenameProject={handleRenameProject}
+        onExportProject={handleExportProject}
+        onImportProject={handleImportProject}
       />
     );
   }
@@ -3858,7 +3998,10 @@ export default function App() {
                   {dancers.length === 0 ? (
                     <div className="px-3 py-2 text-[#666] text-[13px]">No dancers yet</div>
                   ) : (
-                    dancers.map(dancer => (
+                    dancers.map(dancer => {
+                      const formationPos = selectedFormation?.dancers.find((p) => p.dancerId === dancer.id);
+                      const effectiveColor = formationPos?.color ?? dancer.color;
+                      return (
                       <div
                         key={dancer.id}
                         draggable={!selectedFormation?.dancers.some((dancerPos) => dancerPos.dancerId === dancer.id)}
@@ -3881,13 +4024,13 @@ export default function App() {
                           <input
                             type="color"
                             className="absolute inset-0 opacity-0 cursor-pointer"
-                            value={dancer.color}
+                            value={effectiveColor}
                             onChange={(e) => handleDancerColorChange(dancer.id, e.target.value)}
                             title={`Set ${dancer.name} color`}
                           />
                           <span
                             className="absolute inset-0"
-                            style={{ backgroundColor: dancer.color }}
+                            style={{ backgroundColor: effectiveColor }}
                           />
                         </label>
                         <input
@@ -3912,7 +4055,8 @@ export default function App() {
                           <Minus size={12} className="text-[#888]" />
                         </button>
                       </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -4091,7 +4235,7 @@ export default function App() {
                           left: `${(dancerPos.x / safeStageWidth) * 100}%`,
                           top: `${(dancerPos.y / safeStageHeight) * 100}%`,
                           transform: 'translate(-50%, -50%)',
-                          backgroundColor: dancer.color
+                          backgroundColor: dancerPos.color ?? dancer.color
                         }}
                       >
                         {getDancerInitials(dancer)}
@@ -4246,7 +4390,7 @@ export default function App() {
                 )}
                 
                 {/* Dancers */}
-                {renderedStageDancers.map(({ key, dancer, dancerId, x, y, opacity, isSelected }) => (
+                {renderedStageDancers.map(({ key, dancer, color, dancerId, x, y, opacity, isSelected }) => (
                   <div
                     key={key}
                     className={`dancer-circle absolute w-[50px] h-[50px] rounded-full flex items-center justify-center text-white text-[18px] font-medium cursor-move select-none ${isSelected ? 'ring-4 ring-white' : ''}`}
@@ -4255,7 +4399,7 @@ export default function App() {
                       top: `${y}px`,
                       transform: 'translate(-50%, -50%)',
                       opacity,
-                      backgroundColor: dancer.color
+                      backgroundColor: color
                     }}
                     onMouseDown={(e) => handleDancerDragStart(e, dancerId)}
                   >
